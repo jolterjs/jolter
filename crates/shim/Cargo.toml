@@ -1,0 +1,20 @@
+[package]
+name = "jolter-shim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+jolter-resolver = { path = "../resolver" }
+jolter-runtime = { path = "../runtime" }
+jolter-storage = { path = "../storage" }
+semver.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

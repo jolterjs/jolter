@@ -1,0 +1,17 @@
+[package]
+name = "jolter-doctor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+jolter-resolver = { path = "../resolver" }
+jolter-runtime = { path = "../runtime" }
+jolter-shim = { path = "../shim" }
+jolter-storage = { path = "../storage" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "jolter-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "jolter"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+jolter-core = { path = "../core" }
+jolter-doctor = { path = "../doctor" }
+jolter-runtime = { path = "../runtime" }
+jolter-shim = { path = "../shim" }
+jolter-storage = { path = "../storage" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
