@@ -245,6 +245,24 @@ mod tests {
     }
 
     #[test]
+    fn resolves_a_corepack_hashed_package_manager() {
+        let temp = tempfile::tempdir().unwrap();
+        let hash = "a".repeat(56);
+        fs::write(
+            temp.path().join("package.json"),
+            format!(r#"{{"packageManager":"pnpm@10.12.1+sha224.{hash}"}}"#),
+        )
+        .unwrap();
+
+        let resolution = resolve(temp.path()).unwrap();
+
+        assert_eq!(
+            resolution.package_manager.unwrap().request.to_string(),
+            format!("pnpm@10.12.1+sha224.{hash}")
+        );
+    }
+
+    #[test]
     fn lower_priority_nvmrc_does_not_override_or_invalidate_node_version() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join(".node-version"), "24").unwrap();

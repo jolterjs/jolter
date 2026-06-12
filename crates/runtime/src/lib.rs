@@ -176,6 +176,70 @@ impl FromStr for RuntimeRequest {
 pub struct PackageManagerRequest {
     pub kind: PackageManagerKind,
     pub selector: String,
+    pub hash: Option<PackageManagerHash>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageManagerHashAlgorithm {
+    Sha1,
+    Sha224,
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+impl PackageManagerHashAlgorithm {
+    #[must_use]
+    pub const fn hex_length(self) -> usize {
+        match self {
+            Self::Sha1 => 40,
+            Self::Sha224 => 56,
+            Self::Sha256 => 64,
+            Self::Sha384 => 96,
+            Self::Sha512 => 128,
+        }
+    }
+}
+
+impl fmt::Display for PackageManagerHashAlgorithm {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Sha1 => "sha1",
+            Self::Sha224 => "sha224",
+            Self::Sha256 => "sha256",
+            Self::Sha384 => "sha384",
+            Self::Sha512 => "sha512",
+        })
+    }
+}
+
+impl FromStr for PackageManagerHashAlgorithm {
+    type Err = PackageManagerRequestError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "sha1" => Ok(Self::Sha1),
+            "sha224" => Ok(Self::Sha224),
+            "sha256" => Ok(Self::Sha256),
+            "sha384" => Ok(Self::Sha384),
+            "sha512" => Ok(Self::Sha512),
+            _ => Err(PackageManagerRequestError::UnsupportedHashAlgorithm(
+                value.to_owned(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageManagerHash {
+    pub algorithm: PackageManagerHashAlgorithm,
+    pub value: String,
+}
+
+impl fmt::Display for PackageManagerHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}.{}", self.algorithm, self.value)
+    }
 }
 
 impl PackageManagerRequest {
@@ -193,12 +257,12 @@ impl PackageManagerRequest {
                 selector.to_owned(),
             ));
         }
-        validate_numeric_selector(selector)
-            .map_err(|()| PackageManagerRequestError::InvalidSelector(selector.to_owned()))?;
+        let (selector, hash) = parse_package_manager_selector(selector)?;
 
         Ok(Self {
             kind,
             selector: selector.to_owned(),
+            hash,
         })
     }
 
@@ -210,7 +274,11 @@ impl PackageManagerRequest {
 
 impl fmt::Display for PackageManagerRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}@{}", self.kind, self.selector)
+        write!(formatter, "{}@{}", self.kind, self.selector)?;
+        if let Some(hash) = &self.hash {
+            write!(formatter, "+{hash}")?;
+        }
+        Ok(())
     }
 }
 
@@ -249,6 +317,17 @@ pub enum PackageManagerRequestError {
     UnsupportedPackageManager(String),
     #[error("invalid package manager selector `{0}`")]
     InvalidSelector(String),
+    #[error("package manager hashes require an exact semantic version")]
+    HashRequiresExactVersion,
+    #[error("package manager hash must use <algorithm>.<hex>")]
+    InvalidHashFormat,
+    #[error("unsupported package manager hash algorithm `{0}`")]
+    UnsupportedHashAlgorithm(String),
+    #[error("invalid {algorithm} package manager hash `{value}`")]
+    InvalidHash {
+        algorithm: PackageManagerHashAlgorithm,
+        value: String,
+    },
 }
 
 fn validate_selector(kind: RuntimeKind, selector: &str) -> Result<(), RuntimeRequestError> {
@@ -290,6 +369,48 @@ fn validate_numeric_selector(selector: &str) -> Result<(), ()> {
         }
     }
     Ok(())
+}
+
+fn parse_package_manager_selector(
+    value: &str,
+) -> Result<(&str, Option<PackageManagerHash>), PackageManagerRequestError> {
+    let mut parts = value.split('+');
+    let selector = parts
+        .next()
+        .ok_or(PackageManagerRequestError::MissingSelector)?;
+    let hash = parts.next();
+    if parts.next().is_some() {
+        return Err(PackageManagerRequestError::InvalidHashFormat);
+    }
+    validate_numeric_selector(selector)
+        .map_err(|()| PackageManagerRequestError::InvalidSelector(selector.to_owned()))?;
+    let Some(hash) = hash else {
+        return Ok((selector, None));
+    };
+    let exact = Version::parse(selector)
+        .is_ok_and(|version| version.pre.is_empty() && version.build.is_empty());
+    if !exact {
+        return Err(PackageManagerRequestError::HashRequiresExactVersion);
+    }
+    let (algorithm, value) = hash
+        .split_once('.')
+        .ok_or(PackageManagerRequestError::InvalidHashFormat)?;
+    let algorithm: PackageManagerHashAlgorithm = algorithm.parse()?;
+    if value.len() != algorithm.hex_length()
+        || !value.chars().all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(PackageManagerRequestError::InvalidHash {
+            algorithm,
+            value: value.to_owned(),
+        });
+    }
+    Ok((
+        selector,
+        Some(PackageManagerHash {
+            algorithm,
+            value: value.to_ascii_lowercase(),
+        }),
+    ))
 }
 
 fn selector_matches_version(selector: &str, version: &Version) -> bool {
@@ -388,6 +509,7 @@ mod tests {
     fn parses_and_matches_package_manager_requests() {
         let request: PackageManagerRequest = "pnpm@10.x".parse().unwrap();
         assert_eq!(request.kind, PackageManagerKind::Pnpm);
+        assert_eq!(request.hash, None);
         assert!(request.matches_version(&Version::new(10, 34, 3)));
         assert!(!request.matches_version(&Version::new(11, 0, 0)));
         assert!(
@@ -395,5 +517,38 @@ mod tests {
                 .parse::<PackageManagerRequest>()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn parses_corepack_package_manager_hashes() {
+        let value = format!("pnpm@10.2.0+sha224.{}", "A".repeat(56));
+        let request: PackageManagerRequest = value.parse().unwrap();
+
+        assert_eq!(request.selector, "10.2.0");
+        assert_eq!(
+            request.hash.as_ref().unwrap().algorithm,
+            PackageManagerHashAlgorithm::Sha224
+        );
+        assert_eq!(request.hash.as_ref().unwrap().value, "a".repeat(56));
+        assert_eq!(
+            request.to_string(),
+            format!("pnpm@10.2.0+sha224.{}", "a".repeat(56))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_corepack_hashes() {
+        assert!(matches!(
+            format!("pnpm@10+sha224.{}", "a".repeat(56)).parse::<PackageManagerRequest>(),
+            Err(PackageManagerRequestError::HashRequiresExactVersion)
+        ));
+        assert!(matches!(
+            "pnpm@10.2.0+md5.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse::<PackageManagerRequest>(),
+            Err(PackageManagerRequestError::UnsupportedHashAlgorithm(_))
+        ));
+        assert!(matches!(
+            "pnpm@10.2.0+sha224.deadbeef".parse::<PackageManagerRequest>(),
+            Err(PackageManagerRequestError::InvalidHash { .. })
+        ));
     }
 }

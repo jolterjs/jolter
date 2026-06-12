@@ -22,9 +22,9 @@ the specification exists as a Rust workspace and the essential end-to-end
 workflow is functional.
 
 Jolter is not yet ready for a stable release. The largest remaining gaps are
-cross-platform CI coverage, shell onboarding, richer diagnostics, package
-manager compatibility checks, lifecycle commands such as uninstall, and the
-future CI/plugin/tool manifest work described in the specification.
+cross-platform CI coverage, deeper diagnostics and conflict remediation,
+lifecycle commands such as uninstall, and the future CI/plugin/tool manifest
+work described in the specification.
 
 ## Status Legend
 
@@ -61,6 +61,7 @@ Status: **Complete for current providers**
 - HTTPS-only redirect policy.
 - SHA-256 verification for Node.js, Bun, and Deno artifacts.
 - SHA-512 Subresource Integrity verification for npm registry packages.
+- Optional Corepack descriptor hash verification in addition to registry SRI.
 - Bounded metadata, archive, entry-count, and extracted-size handling.
 - Archive path traversal protection.
 - Symlink and hard-link validation.
@@ -82,7 +83,10 @@ Status: **Complete for npm, pnpm, and Yarn alpha workflows**
 - pnpm installation from the official npm registry package.
 - Yarn installation from the official `@yarnpkg/cli-dist` package.
 - Numeric, wildcard, and `latest` selectors.
+- Exact Corepack-style descriptors with SHA-1 and SHA-2 hashes.
 - Highest matching stable version selection.
+- npm-style Node.js engine compatibility validation before installation and
+  local reuse.
 - Verified, cached, atomic installation under `~/.jolter/tools/`.
 - Project-aware dispatch through the `npm`, `npx`, `pnpm`, and `yarn` shims.
 - Package manager synchronization and repair.
@@ -90,9 +94,6 @@ Status: **Complete for npm, pnpm, and Yarn alpha workflows**
 
 Known limitations:
 
-- Corepack-style selectors with an appended hash are not parsed yet.
-- Node.js engine compatibility is not validated before installing a package
-  manager.
 - npm registry selection is currently fixed to the public official registry.
 - Package manager version execution is not probed by `doctor`; Jolter validates
   the exact managed installation selected from verified metadata.
@@ -219,7 +220,7 @@ Remaining checks:
 - conflicting Node/version-manager executables earlier on `PATH`
 - unsupported CPU and operating system guidance
 - writable storage and executable permissions
-- Node/package-manager engine compatibility
+- doctor reporting for Node/package-manager engine compatibility
 - proxy and TLS diagnostics
 - offline cache readiness
 
@@ -257,7 +258,7 @@ Remaining:
 | Node.js management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
 | Bun management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
 | Deno management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
-| Package manager management | Complete for alpha | npm, pnpm, and Yarn are installed and dispatched as managed tools. |
+| Package manager management | Complete for alpha | npm, pnpm, and Yarn are installed and dispatched with engine and optional Corepack hash validation. |
 | Project pinning | Complete | Runtime pinning is implemented. |
 | Automatic switching | Complete for commands | Self-shims resolve the project on every invocation. |
 | Reproducible sync | Complete for current schema | Runtime and package manager selectors are synchronized. |
@@ -339,6 +340,8 @@ Delivered:
 - exact current-session and persistent `PATH` guidance.
 - runtime and managed package manager health in `jolter list`.
 - machine-readable `jolter doctor --json` output.
+- npm-style package-manager Node.js engine compatibility validation.
+- exact Corepack-style `packageManager` hash parsing and archive verification.
 
 Remaining priority work:
 
@@ -346,9 +349,7 @@ Remaining priority work:
 2. Detect conflicting `nvm`, `fnm`, Volta, Corepack, and system executable
    precedence.
 3. Add clear remediation actions to doctor findings.
-4. Validate package manager Node engine requirements before installation.
-5. Support Corepack-style `packageManager` hashes.
-6. Improve error messages for offline cache misses and provider failures.
+4. Improve error messages for offline cache misses and provider failures.
 
 Exit criteria:
 
@@ -476,12 +477,11 @@ Constraints:
 
 Highest priority:
 
-1. Package manager engine compatibility validation.
-2. Corepack-style package manager hash parsing.
-3. Runtime and package manager version probing.
-4. Conflict detection and actionable doctor remediation.
-5. Cross-platform GitHub Actions matrix.
-6. Coverage reporting.
+1. Runtime and package manager version probing.
+2. Conflict detection and actionable doctor remediation.
+3. Cross-platform GitHub Actions matrix.
+4. Coverage reporting.
+5. Improved offline cache-miss and provider failure messages.
 
 Medium priority:
 
@@ -517,9 +517,10 @@ diagnostics.
 
 ### Package Manager Compatibility
 
-A package manager version can require a newer Node.js version than the project
-selected. This needs pre-install compatibility validation to prevent a
-successfully synchronized but unusable toolchain.
+Package-manager `engines.node` requirements are validated before installation
+and when reusing an installed tool. The remaining risk is incomplete or
+incorrect upstream metadata, which should remain visible as a provider error
+rather than producing a silently unusable toolchain.
 
 ### Configuration Compatibility
 

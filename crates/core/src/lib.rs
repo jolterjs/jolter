@@ -86,7 +86,11 @@ impl Jolter {
                 if action.runtime.kind != RuntimeKind::Node {
                     return Err(CoreError::PackageManagerRequiresNode(resolved.request));
                 }
-                let tool = self.ensure_package_manager(&resolved.request, repair)?;
+                let tool = self.ensure_package_manager(
+                    &resolved.request,
+                    &action.runtime.version,
+                    repair,
+                )?;
                 Ok(PackageManagerAction {
                     request: resolved.request,
                     tool: tool.tool,
@@ -130,10 +134,13 @@ impl Jolter {
     fn ensure_package_manager(
         &self,
         request: &PackageManagerRequest,
+        node_version: &semver::Version,
         repair: bool,
     ) -> Result<ToolInstallOutcome, CoreError> {
-        if !request.selector.eq_ignore_ascii_case("latest") {
+        if !request.selector.eq_ignore_ascii_case("latest") && request.hash.is_none() {
             if let Some(tool) = self.storage.find_matching_tool(request)? {
+                self.installer
+                    .validate_installed_package_manager(&tool, node_version)?;
                 return Ok(ToolInstallOutcome {
                     tool,
                     downloaded: false,
@@ -141,9 +148,13 @@ impl Jolter {
             }
         }
         if repair {
-            Ok(self.installer.repair_package_manager(request)?)
+            Ok(self
+                .installer
+                .repair_package_manager(request, node_version)?)
         } else {
-            Ok(self.installer.install_package_manager(request)?)
+            Ok(self
+                .installer
+                .install_package_manager(request, node_version)?)
         }
     }
 }
@@ -279,5 +290,46 @@ mod tests {
         let outcome = jolter.sync(project.path()).unwrap();
 
         assert_eq!(outcome.package_manager.unwrap().tool.version, tool_version);
+    }
+
+    #[test]
+    fn sync_rejects_an_existing_package_manager_incompatible_with_node() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(
+            project.path().join(CONFIG_FILE_NAME),
+            r#"{"runtime":{"node":"20"},"packageManager":{"pnpm":"11"}}"#,
+        )
+        .unwrap();
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        let runtime_version = semver::Version::new(20, 19, 0);
+        let executable = storage.runtime_executable(RuntimeKind::Node, &runtime_version);
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"node").unwrap();
+        let tool_version = semver::Version::new(11, 6, 0);
+        let entrypoint = storage
+            .tool_entrypoint(
+                jolter_runtime::PackageManagerKind::Pnpm,
+                &tool_version,
+                "pnpm",
+            )
+            .unwrap();
+        fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        fs::write(entrypoint, b"pnpm").unwrap();
+        fs::write(
+            storage
+                .tool_version_dir(jolter_runtime::PackageManagerKind::Pnpm, &tool_version)
+                .join("package.json"),
+            r#"{"engines":{"node":">=22.13"}}"#,
+        )
+        .unwrap();
+        let jolter = Jolter::with_storage(storage).unwrap();
+
+        let error = jolter.sync(project.path()).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoreError::Installer(jolter_installer::InstallerError::IncompatibleNodeVersion { .. })
+        ));
     }
 }

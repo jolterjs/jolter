@@ -11,8 +11,12 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use flate2::read::GzDecoder;
 use fs4::FileExt;
-use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind, RuntimeRequest};
+use jolter_runtime::{
+    PackageManagerHash, PackageManagerHashAlgorithm, PackageManagerKind, PackageManagerRequest,
+    RuntimeKind, RuntimeRequest,
+};
 use jolter_storage::{InstalledRuntime, InstalledTool, Storage, runtime_executable_in};
+use nodejs_semver::{Range as NodeRange, Version as NodeVersion};
 use reqwest::{
     Url,
     blocking::Client,
@@ -21,7 +25,8 @@ use reqwest::{
 };
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256, Sha512};
+use sha1::Sha1;
+use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 use thiserror::Error;
 
 const NODE_INDEX_URL: &str = "https://nodejs.org/dist/index.json";
@@ -192,6 +197,8 @@ pub struct PackageManagerRelease {
     pub kind: PackageManagerKind,
     pub version: Version,
     pub artifact: Artifact,
+    pub node_engine: Option<String>,
+    pub expected_hash: Option<PackageManagerHash>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,30 +414,71 @@ impl Installer {
                 format: ArchiveFormat::TarGz,
                 strip_components: 1,
             },
+            node_engine: selected.engines.node.clone(),
+            expected_hash: request.hash.clone(),
         })
     }
 
     pub fn install_package_manager(
         &self,
         request: &PackageManagerRequest,
+        node_version: &Version,
     ) -> Result<ToolInstallOutcome, InstallerError> {
-        self.install_package_manager_inner(request, false)
+        self.install_package_manager_inner(request, node_version, false)
     }
 
     pub fn repair_package_manager(
         &self,
         request: &PackageManagerRequest,
+        node_version: &Version,
     ) -> Result<ToolInstallOutcome, InstallerError> {
-        self.install_package_manager_inner(request, true)
+        self.install_package_manager_inner(request, node_version, true)
+    }
+
+    pub fn validate_installed_package_manager(
+        &self,
+        tool: &InstalledTool,
+        node_version: &Version,
+    ) -> Result<(), InstallerError> {
+        let path = tool.path.join("package.json");
+        if !path.is_file() {
+            return Ok(());
+        }
+        let contents = fs::read_to_string(&path).map_err(|source| {
+            InstallerError::InstalledPackageMetadataRead {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        let metadata: InstalledPackageMetadata =
+            serde_json::from_str(&contents).map_err(|source| {
+                InstallerError::InstalledPackageMetadataParse {
+                    path: path.clone(),
+                    source,
+                }
+            })?;
+        validate_node_engine(
+            tool.kind,
+            &tool.version,
+            metadata.engines.node.as_deref(),
+            node_version,
+        )
     }
 
     fn install_package_manager_inner(
         &self,
         request: &PackageManagerRequest,
+        node_version: &Version,
         repair: bool,
     ) -> Result<ToolInstallOutcome, InstallerError> {
         self.storage.ensure_layout()?;
         let release = self.resolve_package_manager(request)?;
+        validate_node_engine(
+            release.kind,
+            &release.version,
+            release.node_engine.as_deref(),
+            node_version,
+        )?;
         let destination = self
             .storage
             .tool_version_dir(release.kind, &release.version);
@@ -443,6 +491,14 @@ impl Installer {
             .entrypoint(&command)
             .ok_or(InstallerError::MissingToolEntrypoint(release.kind))?;
         let executable = destination.join(entrypoint);
+        let verified_archive = if let Some(hash) = &release.expected_hash {
+            release.artifact.validate()?;
+            let archive = self.obtain_archive(&release.artifact)?;
+            verify_package_manager_hash(&archive, hash)?;
+            Some(archive)
+        } else {
+            None
+        };
         if executable.is_file() {
             return Ok(ToolInstallOutcome {
                 tool: InstalledTool {
@@ -467,8 +523,12 @@ impl Installer {
             })?;
         }
 
-        release.artifact.validate()?;
-        let archive = self.obtain_archive(&release.artifact)?;
+        let archive = if let Some(archive) = verified_archive {
+            archive
+        } else {
+            release.artifact.validate()?;
+            self.obtain_archive(&release.artifact)?
+        };
         let tool_parent = self.storage.tool_dir(release.kind);
         let stage = tempfile::Builder::new()
             .prefix(".jolter-tool-install-")
@@ -813,12 +873,25 @@ struct NpmPackageMetadata {
 struct NpmVersionMetadata {
     version: String,
     dist: NpmDistribution,
+    #[serde(default)]
+    engines: NpmEngines,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NpmEngines {
+    node: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct NpmDistribution {
     tarball: String,
     integrity: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InstalledPackageMetadata {
+    #[serde(default)]
+    engines: NpmEngines,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1146,6 +1219,79 @@ fn verify_sha512(path: &Path, expected: &str) -> Result<(), InstallerError> {
     }
 }
 
+fn verify_package_manager_hash(
+    path: &Path,
+    expected: &PackageManagerHash,
+) -> Result<(), InstallerError> {
+    let actual = match expected.algorithm {
+        PackageManagerHashAlgorithm::Sha1 => digest_hex::<Sha1>(path)?,
+        PackageManagerHashAlgorithm::Sha224 => digest_hex::<Sha224>(path)?,
+        PackageManagerHashAlgorithm::Sha256 => digest_hex::<Sha256>(path)?,
+        PackageManagerHashAlgorithm::Sha384 => digest_hex::<Sha384>(path)?,
+        PackageManagerHashAlgorithm::Sha512 => digest_hex::<Sha512>(path)?,
+    };
+    if actual.eq_ignore_ascii_case(&expected.value) {
+        Ok(())
+    } else {
+        Err(InstallerError::PackageManagerHashMismatch {
+            algorithm: expected.algorithm,
+            expected: expected.value.clone(),
+            actual,
+        })
+    }
+}
+
+fn digest_hex<D: Digest>(path: &Path) -> Result<String, InstallerError> {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+    let mut file = File::open(path).map_err(InstallerError::Io)?;
+    let mut hasher = D::new();
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(InstallerError::Io)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let output = hasher.finalize();
+    let mut hex = String::with_capacity(output.len() * 2);
+    for byte in output {
+        hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    Ok(hex)
+}
+
+fn validate_node_engine(
+    kind: PackageManagerKind,
+    package_manager_version: &Version,
+    requirement: Option<&str>,
+    node_version: &Version,
+) -> Result<(), InstallerError> {
+    let Some(requirement) = requirement.filter(|value| !value.trim().is_empty()) else {
+        return Ok(());
+    };
+    let range =
+        NodeRange::parse(requirement).map_err(|source| InstallerError::InvalidNodeEngineRange {
+            package_manager: kind,
+            version: package_manager_version.clone(),
+            requirement: requirement.to_owned(),
+            details: source.to_string(),
+        })?;
+    let node = NodeVersion::from((node_version.major, node_version.minor, node_version.patch));
+    if range.satisfies(&node) {
+        Ok(())
+    } else {
+        Err(InstallerError::IncompatibleNodeVersion {
+            package_manager: kind,
+            version: package_manager_version.clone(),
+            requirement: requirement.to_owned(),
+            node_version: node_version.clone(),
+        })
+    }
+}
+
 fn extract_archive(
     archive: &Path,
     destination: &Path,
@@ -1455,6 +1601,10 @@ struct ToolInstallManifest<'a> {
     version: String,
     artifact_url: &'a str,
     integrity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_engine: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_manager_hash: Option<String>,
 }
 
 fn write_tool_manifest(
@@ -1466,6 +1616,8 @@ fn write_tool_manifest(
         version: release.version.to_string(),
         artifact_url: &release.artifact.url,
         integrity: release.artifact.integrity.to_string(),
+        node_engine: release.node_engine.as_deref(),
+        package_manager_hash: release.expected_hash.as_ref().map(ToString::to_string),
     };
     let contents = serde_json::to_vec_pretty(&manifest).map_err(InstallerError::Manifest)?;
     fs::write(destination.join(".jolter-tool.json"), contents).map_err(InstallerError::Io)
@@ -1487,6 +1639,12 @@ pub enum InstallerError {
     UnsupportedIntegrity(String),
     #[error("artifact checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
+    #[error("{algorithm} package manager hash mismatch: expected {expected}, got {actual}")]
+    PackageManagerHashMismatch {
+        algorithm: PackageManagerHashAlgorithm,
+        expected: String,
+        actual: String,
+    },
     #[error("checksum metadata did not contain an entry for `{file}`")]
     ChecksumNotFound { file: String },
     #[error("release did not contain checksum metadata for `{asset}`")]
@@ -1520,6 +1678,36 @@ pub enum InstallerError {
         url: String,
         #[source]
         source: serde_json::Error,
+    },
+    #[error("failed to read installed package metadata at {path}: {source}")]
+    InstalledPackageMetadataRead {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("invalid installed package metadata at {path}: {source}")]
+    InstalledPackageMetadataParse {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error(
+        "{package_manager}@{version} has invalid Node.js engine range `{requirement}`: {details}"
+    )]
+    InvalidNodeEngineRange {
+        package_manager: PackageManagerKind,
+        version: Version,
+        requirement: String,
+        details: String,
+    },
+    #[error(
+        "{package_manager}@{version} requires Node.js `{requirement}`, but node@{node_version} was selected"
+    )]
+    IncompatibleNodeVersion {
+        package_manager: PackageManagerKind,
+        version: Version,
+        requirement: String,
+        node_version: Version,
     },
     #[error("no stable release satisfies {0}")]
     VersionNotFound(RuntimeRequest),
@@ -1725,6 +1913,7 @@ mod tests {
         let storage = Storage::new(temp.path());
         let archive = tar_gz_with_file("package/bin/pnpm.cjs", b"fake pnpm");
         let integrity = format!("sha512-{}", BASE64.encode(Sha512::digest(&archive)));
+        let corepack_hash = format!("{:x}", Sha224::digest(&archive));
         let metadata_url = "https://registry.npmjs.org/pnpm".to_owned();
         let download_url = "https://registry.npmjs.org/pnpm/-/pnpm-10.2.0.tgz".to_owned();
         let metadata = serde_json::json!({
@@ -1758,9 +1947,12 @@ mod tests {
             Platform::current().unwrap(),
             client.clone(),
         );
+        let request: PackageManagerRequest = format!("pnpm@10.2.0+sha224.{corepack_hash}")
+            .parse()
+            .unwrap();
 
         let outcome = installer
-            .install_package_manager(&"pnpm@10".parse().unwrap())
+            .install_package_manager(&request, &Version::new(20, 0, 0))
             .unwrap();
 
         assert!(outcome.downloaded);
@@ -1772,7 +1964,122 @@ mod tests {
                 .is_file()
         );
         assert!(outcome.tool.path.join(".jolter-tool.json").is_file());
+        let manifest = fs::read_to_string(outcome.tool.path.join(".jolter-tool.json")).unwrap();
+        assert!(manifest.contains(&format!("sha224.{corepack_hash}")));
         assert_eq!(*client.download_count.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn rejects_a_mismatched_corepack_hash_before_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        let archive = tar_gz_with_file("package/bin/pnpm.cjs", b"fake pnpm");
+        let integrity = format!("sha512-{}", BASE64.encode(Sha512::digest(&archive)));
+        let metadata_url = "https://registry.npmjs.org/pnpm".to_owned();
+        let download_url = "https://registry.npmjs.org/pnpm/-/pnpm-10.2.0.tgz".to_owned();
+        let metadata = serde_json::json!({
+            "dist-tags": { "latest": "10.2.0" },
+            "versions": {
+                "10.2.0": {
+                    "version": "10.2.0",
+                    "dist": {
+                        "tarball": download_url.clone(),
+                        "integrity": integrity
+                    }
+                }
+            }
+        })
+        .to_string();
+        let client = Arc::new(FakeHttpClient {
+            text: HashMap::from([(metadata_url, metadata)]),
+            downloads: HashMap::from([(download_url, archive)]),
+            text_count: Mutex::new(0),
+            download_count: Mutex::new(0),
+        });
+        let installer =
+            Installer::with_client(storage.clone(), Platform::current().unwrap(), client);
+        let request: PackageManagerRequest = format!("pnpm@10.2.0+sha224.{}", "0".repeat(56))
+            .parse()
+            .unwrap();
+
+        let error = installer
+            .install_package_manager(&request, &Version::new(20, 0, 0))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            InstallerError::PackageManagerHashMismatch { .. }
+        ));
+        assert!(
+            !storage
+                .tool_version_dir(PackageManagerKind::Pnpm, &Version::new(10, 2, 0))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn rejects_a_package_manager_incompatible_with_selected_node() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        let metadata_url = "https://registry.npmjs.org/pnpm".to_owned();
+        let metadata = serde_json::json!({
+            "dist-tags": { "latest": "11.6.0" },
+            "versions": {
+                "11.6.0": {
+                    "version": "11.6.0",
+                    "dist": {
+                        "tarball": "https://registry.npmjs.org/pnpm/-/pnpm-11.6.0.tgz",
+                        "integrity": format!("sha512-{}", BASE64.encode([0_u8; 64]))
+                    },
+                    "engines": {
+                        "node": ">=22.13"
+                    }
+                }
+            }
+        })
+        .to_string();
+        let client = Arc::new(FakeHttpClient {
+            text: HashMap::from([(metadata_url, metadata)]),
+            downloads: HashMap::new(),
+            text_count: Mutex::new(0),
+            download_count: Mutex::new(0),
+        });
+        let installer =
+            Installer::with_client(storage, Platform::current().unwrap(), client.clone());
+
+        let error = installer
+            .install_package_manager(&"pnpm@11.6.0".parse().unwrap(), &Version::new(20, 19, 0))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            InstallerError::IncompatibleNodeVersion { .. }
+        ));
+        assert_eq!(*client.download_count.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn evaluates_npm_style_node_engine_ranges() {
+        validate_node_engine(
+            PackageManagerKind::Pnpm,
+            &Version::new(10, 2, 0),
+            Some("^18.18.0 || >=20.9.0"),
+            &Version::new(20, 10, 0),
+        )
+        .unwrap();
+
+        let error = validate_node_engine(
+            PackageManagerKind::Pnpm,
+            &Version::new(10, 2, 0),
+            Some("^18.18.0 || >=20.9.0"),
+            &Version::new(19, 0, 0),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            InstallerError::IncompatibleNodeVersion { .. }
+        ));
     }
 
     fn zip_with_file(path: &str, contents: &[u8]) -> Vec<u8> {

@@ -19,6 +19,8 @@ steps before a stable release.
 - pin project requirements in `jolter.json`
 - resolve `.node-version`, `.nvmrc`, and `package.json#packageManager`
 - install verified npm, pnpm, and Yarn versions from the npm registry
+- accept exact Corepack descriptors with SHA-1 or SHA-2 hashes
+- validate package-manager Node.js engine requirements before installation
 - automatically select project runtimes through self-shims
 - dispatch managed package managers through the selected project Node.js
 - synchronize and repair project runtime installations
@@ -100,7 +102,10 @@ See [shell setup](docs/setup.md) for supported shells and persistence behavior.
 
 Package-manager requirements for npm, pnpm, and Yarn are installed into
 `~/.jolter/tools` and selected by the generated shims. Jolter verifies npm
-registry packages with their SHA-512 integrity metadata.
+registry packages with their SHA-512 integrity metadata and checks the
+additional hash when `packageManager` uses an exact Corepack descriptor such
+as `pnpm@10.12.1+sha224.<hash>`. The selected package manager must also support
+the project's selected Node.js version according to its `engines.node` range.
 
 ## Environment
 

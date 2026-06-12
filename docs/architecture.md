@@ -30,11 +30,18 @@ Jolter is a Rust workspace split by responsibility:
    `package.json#packageManager`.
 2. Query abbreviated metadata from the official npm registry.
 3. Select the highest stable release matching the requested selector.
-4. Download the published tarball and verify its SHA-512 SRI value.
-5. Extract and publish it atomically under
+4. Validate the release's npm-style `engines.node` range against the selected
+   project Node.js version.
+5. Download the published tarball and verify its SHA-512 SRI value.
+6. When an exact Corepack descriptor includes a hash, verify that hash over the
+   same tarball.
+7. Extract and publish it atomically under
    `~/.jolter/tools/<manager>/<version>`.
-6. Dispatch its bundled JavaScript entry point through the Node.js runtime
+8. Dispatch its bundled JavaScript entry point through the Node.js runtime
    selected for the project.
+
+Locally reusable package-manager installations are checked against the
+selected Node.js version using their installed `package.json` metadata.
 
 ## Switching
 

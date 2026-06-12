@@ -14,10 +14,10 @@ jolter-resolver = { path = "../resolver" }
 jolter-runtime = { path = "../runtime" }
 jolter-shim = { path = "../shim" }
 jolter-storage = { path = "../storage" }
+semver.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-semver.workspace = true
 tempfile.workspace = true
 
 [lints]
