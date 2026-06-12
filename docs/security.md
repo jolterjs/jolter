@@ -15,7 +15,9 @@ inputs even when they come from an official provider.
 
 Node.js checksums come from the matching official `SHASUMS256.txt`. Bun and
 Deno use GitHub release SHA-256 digests, with provider checksum files as a
-fallback. Verified archives are cached by checksum.
+fallback. npm, pnpm, and Yarn packages use SHA-512 Subresource Integrity values
+from official npm registry metadata. Verified archives are cached by integrity
+identity.
 
 ## Extraction
 

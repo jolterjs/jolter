@@ -4,7 +4,10 @@ use std::{
 };
 
 use jolter_config::{ProjectConfig, discover};
-use jolter_runtime::{RuntimeKind, RuntimeRequest, RuntimeRequestError};
+use jolter_runtime::{
+    PackageManagerRequest, PackageManagerRequestError, RuntimeKind, RuntimeRequest,
+    RuntimeRequestError,
+};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -12,7 +15,7 @@ use thiserror::Error;
 pub struct ProjectResolution {
     pub root: PathBuf,
     pub runtime: Option<ResolvedRuntime>,
-    pub package_manager: Option<PackageManagerRequest>,
+    pub package_manager: Option<ResolvedPackageManager>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,9 +25,8 @@ pub struct ResolvedRuntime {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackageManagerRequest {
-    pub name: String,
-    pub selector: String,
+pub struct ResolvedPackageManager {
+    pub request: PackageManagerRequest,
     pub source: RequirementSource,
 }
 
@@ -62,7 +64,12 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
         },
     };
 
-    let package_manager = match config.as_ref().and_then(package_manager_from_config) {
+    let package_manager = match config
+        .as_ref()
+        .map(package_manager_from_config)
+        .transpose()?
+        .flatten()
+    {
         Some(request) => Some(request),
         None => resolve_package_json(&start)?,
     };
@@ -85,16 +92,33 @@ fn runtime_from_config(
     })
 }
 
-fn package_manager_from_config(config: &ProjectConfig) -> Option<PackageManagerRequest> {
+fn package_manager_from_config(
+    config: &ProjectConfig,
+) -> Result<Option<ResolvedPackageManager>, PackageManagerRequestError> {
     config
         .package_manager
         .iter()
         .next()
-        .map(|(name, selector)| PackageManagerRequest {
-            name: name.clone(),
-            selector: selector.clone(),
-            source: RequirementSource::JolterConfig,
+        .map(|(name, selector)| {
+            PackageManagerRequest::new(name.parse()?, selector).map(|request| {
+                ResolvedPackageManager {
+                    request,
+                    source: RequirementSource::JolterConfig,
+                }
+            })
         })
+        .transpose()
+}
+
+fn resolved_package_manager(
+    name: &str,
+    selector: &str,
+    source: RequirementSource,
+) -> Result<ResolvedPackageManager, PackageManagerRequestError> {
+    Ok(ResolvedPackageManager {
+        request: PackageManagerRequest::new(name.parse()?, selector)?,
+        source,
+    })
 }
 
 fn resolve_node_file(
@@ -116,7 +140,7 @@ fn resolve_node_file(
     Ok(Some(ResolvedRuntime { request, source }))
 }
 
-fn resolve_package_json(start: &Path) -> Result<Option<PackageManagerRequest>, ResolverError> {
+fn resolve_package_json(start: &Path) -> Result<Option<ResolvedPackageManager>, ResolverError> {
     let Some(path) = find_upward(start, "package.json") else {
         return Ok(None);
     };
@@ -138,11 +162,11 @@ fn resolve_package_json(start: &Path) -> Result<Option<PackageManagerRequest>, R
     if name.is_empty() || selector.is_empty() {
         return Err(ResolverError::InvalidPackageManager(value.to_owned()));
     }
-    Ok(Some(PackageManagerRequest {
-        name: name.to_owned(),
-        selector: selector.to_owned(),
-        source: RequirementSource::PackageJson,
-    }))
+    Ok(Some(resolved_package_manager(
+        name,
+        selector,
+        RequirementSource::PackageJson,
+    )?))
 }
 
 fn find_upward(start: &Path, file_name: &str) -> Option<PathBuf> {
@@ -158,6 +182,8 @@ pub enum ResolverError {
     Config(#[from] jolter_config::ConfigError),
     #[error(transparent)]
     Runtime(#[from] RuntimeRequestError),
+    #[error(transparent)]
+    PackageManager(#[from] PackageManagerRequestError),
     #[error("failed to resolve path {path}: {source}")]
     Canonicalize {
         path: PathBuf,
@@ -212,7 +238,10 @@ mod tests {
 
         let resolution = resolve(temp.path()).unwrap();
         assert_eq!(resolution.runtime.unwrap().request.to_string(), "node@22");
-        assert_eq!(resolution.package_manager.unwrap().name, "pnpm");
+        assert_eq!(
+            resolution.package_manager.unwrap().request.to_string(),
+            "pnpm@10.12.1"
+        );
     }
 
     #[test]

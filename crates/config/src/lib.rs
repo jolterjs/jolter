@@ -69,6 +69,9 @@ impl ProjectConfig {
         if configured_runtimes > 1 {
             return Err(ConfigError::MultipleRuntimes);
         }
+        if self.package_manager.len() > 1 {
+            return Err(ConfigError::MultiplePackageManagers);
+        }
         for (name, selector) in self.runtime.entries().chain(
             self.package_manager
                 .iter()
@@ -77,6 +80,9 @@ impl ProjectConfig {
             if selector.trim().is_empty() {
                 return Err(ConfigError::EmptySelector(name.to_owned()));
             }
+        }
+        if let Some((name, selector)) = self.package_manager.iter().next() {
+            jolter_runtime::PackageManagerRequest::new(name.parse()?, selector)?;
         }
         Ok(())
     }
@@ -150,8 +156,12 @@ pub enum ConfigError {
     },
     #[error("only one runtime may be configured per project")]
     MultipleRuntimes,
+    #[error("only one package manager may be configured per project")]
+    MultiplePackageManagers,
     #[error("selector for `{0}` cannot be empty")]
     EmptySelector(String),
+    #[error(transparent)]
+    PackageManager(#[from] jolter_runtime::PackageManagerRequestError),
     #[error("invalid configuration path {path}")]
     InvalidPath { path: PathBuf },
 }
@@ -203,6 +213,30 @@ mod tests {
         assert!(matches!(
             config.validate(),
             Err(ConfigError::MultipleRuntimes)
+        ));
+    }
+
+    #[test]
+    fn rejects_multiple_or_unknown_package_managers() {
+        let mut package_manager = BTreeMap::new();
+        package_manager.insert("pnpm".to_owned(), "10".to_owned());
+        package_manager.insert("yarn".to_owned(), "4".to_owned());
+        let config = ProjectConfig {
+            runtime: RuntimeConfig::default(),
+            package_manager,
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::MultiplePackageManagers)
+        ));
+
+        let config = ProjectConfig {
+            runtime: RuntimeConfig::default(),
+            package_manager: BTreeMap::from([("rush".to_owned(), "5".to_owned())]),
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::PackageManager(_))
         ));
     }
 }

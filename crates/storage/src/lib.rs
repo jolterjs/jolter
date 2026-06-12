@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use jolter_runtime::RuntimeKind;
+use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -73,6 +73,32 @@ impl Storage {
     }
 
     #[must_use]
+    pub fn tools_dir(&self) -> PathBuf {
+        self.root.join("tools")
+    }
+
+    #[must_use]
+    pub fn tool_dir(&self, kind: PackageManagerKind) -> PathBuf {
+        self.tools_dir().join(kind.to_string())
+    }
+
+    #[must_use]
+    pub fn tool_version_dir(&self, kind: PackageManagerKind, version: &Version) -> PathBuf {
+        self.tool_dir(kind).join(version.to_string())
+    }
+
+    #[must_use]
+    pub fn tool_entrypoint(
+        &self,
+        kind: PackageManagerKind,
+        version: &Version,
+        command: &str,
+    ) -> Option<PathBuf> {
+        kind.entrypoint(command)
+            .map(|entrypoint| self.tool_version_dir(kind, version).join(entrypoint))
+    }
+
+    #[must_use]
     pub fn cache_dir(&self) -> PathBuf {
         self.root.join("cache")
     }
@@ -85,6 +111,7 @@ impl Storage {
     pub fn ensure_layout(&self) -> Result<(), StorageError> {
         for path in [
             self.runtimes_dir(),
+            self.tools_dir(),
             self.shims_dir(),
             self.cache_dir(),
             self.config_dir(),
@@ -96,6 +123,10 @@ impl Storage {
         }
         for kind in RuntimeKind::ALL {
             let path = self.runtime_dir(kind);
+            fs::create_dir_all(&path).map_err(|source| StorageError::Create { path, source })?;
+        }
+        for kind in PackageManagerKind::ALL {
+            let path = self.tool_dir(kind);
             fs::create_dir_all(&path).map_err(|source| StorageError::Create { path, source })?;
         }
         Ok(())
@@ -160,6 +191,63 @@ impl Storage {
             }))
     }
 
+    pub fn installed_tools(&self) -> Result<Vec<InstalledTool>, StorageError> {
+        let mut installed = Vec::new();
+        for kind in PackageManagerKind::ALL {
+            let directory = self.tool_dir(kind);
+            if !directory.exists() {
+                continue;
+            }
+            let entries = fs::read_dir(&directory).map_err(|source| StorageError::Read {
+                path: directory.clone(),
+                source,
+            })?;
+            for entry in entries {
+                let entry = entry.map_err(|source| StorageError::Read {
+                    path: directory.clone(),
+                    source,
+                })?;
+                if !entry
+                    .file_type()
+                    .map_err(|source| StorageError::Read {
+                        path: entry.path(),
+                        source,
+                    })?
+                    .is_dir()
+                {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if let Ok(version) = Version::parse(name.trim_start_matches('v')) {
+                    installed.push(InstalledTool {
+                        kind,
+                        version,
+                        path: entry.path(),
+                    });
+                }
+            }
+        }
+        installed.sort_by(|left, right| {
+            left.kind
+                .cmp(&right.kind)
+                .then_with(|| left.version.cmp(&right.version))
+        });
+        Ok(installed)
+    }
+
+    pub fn find_matching_tool(
+        &self,
+        request: &PackageManagerRequest,
+    ) -> Result<Option<InstalledTool>, StorageError> {
+        Ok(self.installed_tools()?.into_iter().rev().find(|tool| {
+            tool.kind == request.kind
+                && request.matches_version(&tool.version)
+                && self
+                    .tool_entrypoint(tool.kind, &tool.version, &tool.kind.to_string())
+                    .is_some_and(|entrypoint| entrypoint.is_file())
+        }))
+    }
+
     pub fn activate(&self, kind: RuntimeKind, version: &Version) -> Result<(), StorageError> {
         let path = self.config_dir().join("active.json");
         let mut active = if path.is_file() {
@@ -216,6 +304,40 @@ pub struct InstalledRuntime {
     pub kind: RuntimeKind,
     pub version: Version,
     pub path: PathBuf,
+}
+
+impl InstalledRuntime {
+    #[must_use]
+    pub fn executable(&self) -> PathBuf {
+        runtime_executable_in(&self.path, self.kind)
+    }
+
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.executable().is_file()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledTool {
+    pub kind: PackageManagerKind,
+    pub version: Version,
+    pub path: PathBuf,
+}
+
+impl InstalledTool {
+    #[must_use]
+    pub fn primary_entrypoint(&self) -> Option<PathBuf> {
+        self.kind
+            .entrypoint(&self.kind.to_string())
+            .map(|entrypoint| self.path.join(entrypoint))
+    }
+
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.primary_entrypoint()
+            .is_some_and(|entrypoint| entrypoint.is_file())
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -364,6 +486,7 @@ mod tests {
         assert!(storage.runtime_dir(RuntimeKind::Bun).is_dir());
         assert!(storage.runtime_dir(RuntimeKind::Deno).is_dir());
         assert!(storage.shims_dir().is_dir());
+        assert!(storage.tool_dir(PackageManagerKind::Pnpm).is_dir());
     }
 
     #[test]
@@ -401,5 +524,26 @@ mod tests {
             storage.active_version(RuntimeKind::Node).unwrap(),
             Some(Version::new(24, 3, 0))
         );
+    }
+
+    #[test]
+    fn finds_highest_matching_complete_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+        for version in [Version::new(10, 1, 0), Version::new(10, 2, 0)] {
+            let entrypoint = storage
+                .tool_entrypoint(PackageManagerKind::Pnpm, &version, "pnpm")
+                .unwrap();
+            fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+            fs::write(entrypoint, b"pnpm").unwrap();
+        }
+
+        let found = storage
+            .find_matching_tool(&"pnpm@10".parse().unwrap())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(found.version, Version::new(10, 2, 0));
     }
 }

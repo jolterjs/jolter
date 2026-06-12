@@ -20,6 +20,7 @@ repository = "https://github.com/jolterjs/jolter"
 rust-version = "1.85"
 
 [workspace.dependencies]
+base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
 flate2 = "1.1"
 fs4 = "1.1"

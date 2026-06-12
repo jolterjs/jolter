@@ -4,23 +4,25 @@ use jolter_resolver::resolve;
 use jolter_runtime::RuntimeKind;
 use jolter_shim::SHIM_COMMANDS;
 use jolter_storage::{InstalledRuntime, Storage};
+use serde::Serialize;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CheckStatus {
     Pass,
     Warning,
     Fail,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Check {
     pub status: CheckStatus,
     pub name: &'static str,
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Report {
     pub checks: Vec<Check>,
 }
@@ -86,7 +88,7 @@ pub fn examine(project: &Path, storage: &Storage) -> Result<Report, DoctorError>
         storage,
         matching_runtime.as_ref(),
         resolution.package_manager.as_ref(),
-    ));
+    )?);
     checks.push(shim_check(storage));
     checks.push(path_check(storage));
 
@@ -96,48 +98,43 @@ pub fn examine(project: &Path, storage: &Storage) -> Result<Report, DoctorError>
 fn package_manager_check(
     storage: &Storage,
     runtime: Option<&InstalledRuntime>,
-    package_manager: Option<&jolter_resolver::PackageManagerRequest>,
-) -> Check {
+    package_manager: Option<&jolter_resolver::ResolvedPackageManager>,
+) -> Result<Check, DoctorError> {
     let Some(package_manager) = package_manager else {
-        return Check {
+        return Ok(Check {
             status: CheckStatus::Warning,
             name: "package manager",
             message: "no package manager requirement was found".to_owned(),
-        };
+        });
     };
-    let Some(runtime) = runtime.filter(|runtime| runtime.kind == RuntimeKind::Node) else {
-        return Check {
+    if runtime.is_none_or(|runtime| runtime.kind != RuntimeKind::Node) {
+        return Ok(Check {
             status: CheckStatus::Fail,
             name: "package manager",
             message: format!(
                 "{}@{} requires an installed Node.js runtime",
-                package_manager.name, package_manager.selector
+                package_manager.request.kind, package_manager.request.selector
             ),
-        };
-    };
-    let executable = storage.node_tool_executable(&runtime.version, &package_manager.name);
-    if executable.is_file() {
-        Check {
-            status: CheckStatus::Warning,
+        });
+    }
+    if let Some(tool) = storage.find_matching_tool(&package_manager.request)? {
+        Ok(Check {
+            status: CheckStatus::Pass,
             name: "package manager",
             message: format!(
-                "{}@{} executable is present at {}; version probing is not implemented yet",
-                package_manager.name,
-                package_manager.selector,
-                executable.display()
+                "{} is satisfied by {}@{}",
+                package_manager.request, tool.kind, tool.version
             ),
-        }
+        })
     } else {
-        Check {
+        Ok(Check {
             status: CheckStatus::Fail,
             name: "package manager",
             message: format!(
-                "{}@{} is configured but no executable exists at {}",
-                package_manager.name,
-                package_manager.selector,
-                executable.display()
+                "{} is configured but no matching managed installation exists",
+                package_manager.request
             ),
-        }
+        })
     }
 }
 
@@ -208,4 +205,42 @@ pub enum DoctorError {
     Resolver(#[from] jolter_resolver::ResolverError),
     #[error(transparent)]
     Storage(#[from] jolter_storage::StorageError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jolter_runtime::PackageManagerKind;
+    use semver::Version;
+    use std::fs;
+
+    #[test]
+    fn reports_a_matching_managed_package_manager_as_healthy() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+        fs::write(
+            project.path().join("jolter.json"),
+            r#"{"runtime":{"node":"24"},"packageManager":{"pnpm":"10"}}"#,
+        )
+        .unwrap();
+        let node = storage.runtime_executable(RuntimeKind::Node, &Version::new(24, 1, 0));
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(node, b"node").unwrap();
+        let pnpm = storage
+            .tool_entrypoint(PackageManagerKind::Pnpm, &Version::new(10, 2, 0), "pnpm")
+            .unwrap();
+        fs::create_dir_all(pnpm.parent().unwrap()).unwrap();
+        fs::write(pnpm, b"pnpm").unwrap();
+
+        let report = examine(project.path(), &storage).unwrap();
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.name == "package manager")
+            .unwrap();
+
+        assert_eq!(check.status, CheckStatus::Pass);
+    }
 }

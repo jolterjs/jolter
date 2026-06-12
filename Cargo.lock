@@ -822,6 +822,7 @@ dependencies = [
  "jolter-runtime",
  "jolter-shim",
  "jolter-storage",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]
@@ -830,6 +831,7 @@ dependencies = [
 name = "jolter-config"
 version = "0.1.0"
 dependencies = [
+ "jolter-runtime",
  "serde",
  "serde_json",
  "tempfile",
@@ -860,6 +862,9 @@ dependencies = [
  "jolter-runtime",
  "jolter-shim",
  "jolter-storage",
+ "semver",
+ "serde",
+ "tempfile",
  "thiserror",
 ]
 
@@ -867,6 +872,7 @@ dependencies = [
 name = "jolter-installer"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "flate2",
  "fs4",
  "jolter-runtime",

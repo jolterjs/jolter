@@ -17,6 +17,7 @@ jolter-doctor = { path = "../doctor" }
 jolter-runtime = { path = "../runtime" }
 jolter-shim = { path = "../shim" }
 jolter-storage = { path = "../storage" }
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

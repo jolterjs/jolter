@@ -1,4 +1,6 @@
 use std::{
+    collections::BTreeMap,
+    fmt,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
@@ -6,18 +8,20 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use flate2::read::GzDecoder;
 use fs4::FileExt;
-use jolter_runtime::{RuntimeKind, RuntimeRequest};
-use jolter_storage::{InstalledRuntime, Storage, runtime_executable_in};
+use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind, RuntimeRequest};
+use jolter_storage::{InstalledRuntime, InstalledTool, Storage, runtime_executable_in};
 use reqwest::{
     Url,
     blocking::Client,
+    header::ACCEPT,
     redirect::{Attempt, Policy},
 };
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use thiserror::Error;
 
 const NODE_INDEX_URL: &str = "https://nodejs.org/dist/index.json";
@@ -30,7 +34,7 @@ const METADATA_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
     pub url: String,
-    pub sha256: String,
+    pub integrity: ArtifactIntegrity,
     pub file_name: String,
     pub format: ArchiveFormat,
     pub strip_components: usize,
@@ -39,7 +43,7 @@ pub struct Artifact {
 impl Artifact {
     pub fn validate(&self) -> Result<(), InstallerError> {
         ensure_https(&self.url)?;
-        validate_checksum(&self.sha256)?;
+        self.integrity.validate()?;
         if self.file_name.is_empty()
             || Path::new(&self.file_name)
                 .components()
@@ -48,6 +52,62 @@ impl Artifact {
             return Err(InstallerError::InvalidArtifactName(self.file_name.clone()));
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactIntegrity {
+    Sha256(String),
+    Sha512(String),
+}
+
+impl ArtifactIntegrity {
+    fn from_sri(value: &str) -> Result<Self, InstallerError> {
+        let Some(encoded) = value.strip_prefix("sha512-") else {
+            return Err(InstallerError::UnsupportedIntegrity(value.to_owned()));
+        };
+        let decoded = BASE64
+            .decode(encoded)
+            .map_err(|_| InstallerError::InvalidIntegrity(value.to_owned()))?;
+        if decoded.len() != 64 {
+            return Err(InstallerError::InvalidIntegrity(value.to_owned()));
+        }
+        Ok(Self::Sha512(encoded.to_owned()))
+    }
+
+    fn validate(&self) -> Result<(), InstallerError> {
+        match self {
+            Self::Sha256(value) => validate_checksum(value),
+            Self::Sha512(value) => {
+                let decoded = BASE64
+                    .decode(value)
+                    .map_err(|_| InstallerError::InvalidIntegrity(format!("sha512-{value}")))?;
+                if decoded.len() != 64 {
+                    return Err(InstallerError::InvalidIntegrity(format!("sha512-{value}")));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn cache_key(&self) -> String {
+        format!("{:x}", Sha256::digest(self.to_string().as_bytes()))
+    }
+
+    fn verify(&self, path: &Path) -> Result<(), InstallerError> {
+        match self {
+            Self::Sha256(expected) => verify_sha256(path, expected),
+            Self::Sha512(expected) => verify_sha512(path, expected),
+        }
+    }
+}
+
+impl fmt::Display for ArtifactIntegrity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sha256(value) => write!(formatter, "sha256-{value}"),
+            Self::Sha512(value) => write!(formatter, "sha512-{value}"),
+        }
     }
 }
 
@@ -127,8 +187,24 @@ pub struct InstallOutcome {
     pub downloaded: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageManagerRelease {
+    pub kind: PackageManagerKind,
+    pub version: Version,
+    pub artifact: Artifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolInstallOutcome {
+    pub tool: InstalledTool,
+    pub downloaded: bool,
+}
+
 pub trait HttpClient: Send + Sync {
     fn get_text(&self, url: &str) -> Result<String, InstallerError>;
+    fn get_npm_metadata(&self, url: &str) -> Result<String, InstallerError> {
+        self.get_text(url)
+    }
     fn download(&self, url: &str, destination: &Path) -> Result<(), InstallerError>;
 }
 
@@ -149,11 +225,17 @@ impl ReqwestHttpClient {
         Ok(Self { client })
     }
 
-    fn response(&self, url: &str) -> Result<reqwest::blocking::Response, InstallerError> {
+    fn response(
+        &self,
+        url: &str,
+        accept: Option<&str>,
+    ) -> Result<reqwest::blocking::Response, InstallerError> {
         ensure_https(url)?;
-        let response = self
-            .client
-            .get(url)
+        let mut request = self.client.get(url);
+        if let Some(accept) = accept {
+            request = request.header(ACCEPT, accept);
+        }
+        let response = request
             .send()
             .map_err(|source| InstallerError::Http {
                 url: url.to_owned(),
@@ -171,33 +253,18 @@ impl ReqwestHttpClient {
 
 impl HttpClient for ReqwestHttpClient {
     fn get_text(&self, url: &str) -> Result<String, InstallerError> {
-        let response = self.response(url)?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_METADATA_BYTES)
-        {
-            return Err(InstallerError::MetadataTooLarge {
-                url: url.to_owned(),
-            });
-        }
-        let mut bytes = Vec::new();
-        response
-            .take(MAX_METADATA_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(InstallerError::Io)?;
-        if bytes.len() as u64 > MAX_METADATA_BYTES {
-            return Err(InstallerError::MetadataTooLarge {
-                url: url.to_owned(),
-            });
-        }
-        String::from_utf8(bytes).map_err(|source| InstallerError::InvalidUtf8 {
-            url: url.to_owned(),
-            source,
-        })
+        read_text_response(self.response(url, None)?, url)
+    }
+
+    fn get_npm_metadata(&self, url: &str) -> Result<String, InstallerError> {
+        read_text_response(
+            self.response(url, Some("application/vnd.npm.install-v1+json"))?,
+            url,
+        )
     }
 
     fn download(&self, url: &str, destination: &Path) -> Result<(), InstallerError> {
-        let response = self.response(url)?;
+        let response = self.response(url, None)?;
         if response
             .content_length()
             .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
@@ -216,6 +283,34 @@ impl HttpClient for ReqwestHttpClient {
         }
         file.sync_all().map_err(InstallerError::Io)
     }
+}
+
+fn read_text_response(
+    response: reqwest::blocking::Response,
+    url: &str,
+) -> Result<String, InstallerError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_METADATA_BYTES)
+    {
+        return Err(InstallerError::MetadataTooLarge {
+            url: url.to_owned(),
+        });
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_METADATA_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(InstallerError::Io)?;
+    if bytes.len() as u64 > MAX_METADATA_BYTES {
+        return Err(InstallerError::MetadataTooLarge {
+            url: url.to_owned(),
+        });
+    }
+    String::from_utf8(bytes).map_err(|source| InstallerError::InvalidUtf8 {
+        url: url.to_owned(),
+        source,
+    })
 }
 
 pub struct Installer {
@@ -256,6 +351,159 @@ impl Installer {
 
     pub fn repair(&self, request: &RuntimeRequest) -> Result<InstallOutcome, InstallerError> {
         self.install_inner(request, true)
+    }
+
+    pub fn resolve_package_manager(
+        &self,
+        request: &PackageManagerRequest,
+    ) -> Result<PackageManagerRelease, InstallerError> {
+        let package_name = request.kind.registry_package();
+        let encoded_name = package_name.replace('@', "%40").replace('/', "%2F");
+        let url = format!("https://registry.npmjs.org/{encoded_name}");
+        let contents = self.npm_metadata_text(&url)?;
+        let metadata: NpmPackageMetadata =
+            serde_json::from_str(&contents).map_err(|source| InstallerError::MetadataJson {
+                url: url.clone(),
+                source,
+            })?;
+
+        let selected = if request.selector.eq_ignore_ascii_case("latest") {
+            metadata
+                .dist_tags
+                .get("latest")
+                .and_then(|version| metadata.versions.get(version))
+        } else {
+            metadata
+                .versions
+                .values()
+                .filter_map(|release| {
+                    let version = Version::parse(&release.version).ok()?;
+                    (version.pre.is_empty() && request.matches_version(&version))
+                        .then_some((version, release))
+                })
+                .max_by(|left, right| left.0.cmp(&right.0))
+                .map(|(_, release)| release)
+        }
+        .ok_or_else(|| InstallerError::PackageManagerVersionNotFound(request.clone()))?;
+
+        let version = Version::parse(&selected.version)
+            .map_err(|_| InstallerError::PackageManagerVersionNotFound(request.clone()))?;
+        let artifact_url = Url::parse(&selected.dist.tarball)
+            .map_err(|_| InstallerError::InvalidUrl(selected.dist.tarball.clone()))?;
+        let file_name = artifact_url
+            .path_segments()
+            .and_then(Iterator::last)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| InstallerError::InvalidArtifactName(selected.dist.tarball.clone()))?
+            .to_owned();
+
+        Ok(PackageManagerRelease {
+            kind: request.kind,
+            version,
+            artifact: Artifact {
+                url: selected.dist.tarball.clone(),
+                integrity: ArtifactIntegrity::from_sri(&selected.dist.integrity)?,
+                file_name,
+                format: ArchiveFormat::TarGz,
+                strip_components: 1,
+            },
+        })
+    }
+
+    pub fn install_package_manager(
+        &self,
+        request: &PackageManagerRequest,
+    ) -> Result<ToolInstallOutcome, InstallerError> {
+        self.install_package_manager_inner(request, false)
+    }
+
+    pub fn repair_package_manager(
+        &self,
+        request: &PackageManagerRequest,
+    ) -> Result<ToolInstallOutcome, InstallerError> {
+        self.install_package_manager_inner(request, true)
+    }
+
+    fn install_package_manager_inner(
+        &self,
+        request: &PackageManagerRequest,
+        repair: bool,
+    ) -> Result<ToolInstallOutcome, InstallerError> {
+        self.storage.ensure_layout()?;
+        let release = self.resolve_package_manager(request)?;
+        let destination = self
+            .storage
+            .tool_version_dir(release.kind, &release.version);
+        let lock = self.tool_install_lock(release.kind, &release.version)?;
+        FileExt::lock(&lock).map_err(InstallerError::Io)?;
+
+        let command = release.kind.to_string();
+        let entrypoint = release
+            .kind
+            .entrypoint(&command)
+            .ok_or(InstallerError::MissingToolEntrypoint(release.kind))?;
+        let executable = destination.join(entrypoint);
+        if executable.is_file() {
+            return Ok(ToolInstallOutcome {
+                tool: InstalledTool {
+                    kind: release.kind,
+                    version: release.version,
+                    path: destination,
+                },
+                downloaded: false,
+            });
+        }
+        if destination.exists() {
+            if !repair {
+                return Err(InstallerError::CorruptToolInstallation { path: destination });
+            }
+            let expected_parent = self.storage.tool_dir(release.kind);
+            if destination.parent() != Some(expected_parent.as_path()) {
+                return Err(InstallerError::UnsafeRemoval { path: destination });
+            }
+            fs::remove_dir_all(&destination).map_err(|source| InstallerError::RemoveCorrupt {
+                path: destination.clone(),
+                source,
+            })?;
+        }
+
+        release.artifact.validate()?;
+        let archive = self.obtain_archive(&release.artifact)?;
+        let tool_parent = self.storage.tool_dir(release.kind);
+        let stage = tempfile::Builder::new()
+            .prefix(".jolter-tool-install-")
+            .tempdir_in(&tool_parent)
+            .map_err(InstallerError::Io)?;
+        let payload = stage.path().join("payload");
+        fs::create_dir(&payload).map_err(InstallerError::Io)?;
+        extract_archive(
+            &archive,
+            &payload,
+            release.artifact.format,
+            release.artifact.strip_components,
+        )?;
+
+        let staged_entrypoint = payload.join(entrypoint);
+        if !staged_entrypoint.is_file() {
+            return Err(InstallerError::ExecutableMissing {
+                path: staged_entrypoint,
+            });
+        }
+        make_executable(&staged_entrypoint)?;
+        write_tool_manifest(&payload, &release)?;
+        fs::rename(&payload, &destination).map_err(|source| InstallerError::Publish {
+            path: destination.clone(),
+            source,
+        })?;
+
+        Ok(ToolInstallOutcome {
+            tool: InstalledTool {
+                kind: release.kind,
+                version: release.version,
+                path: destination,
+            },
+            downloaded: true,
+        })
     }
 
     fn install_inner(
@@ -372,7 +620,7 @@ impl Installer {
             version,
             artifact: Artifact {
                 url: format!("https://nodejs.org/dist/{tagged_version}/{file_name}"),
-                sha256,
+                integrity: ArtifactIntegrity::Sha256(sha256),
                 file_name,
                 format: target.format,
                 strip_components: 1,
@@ -430,7 +678,7 @@ impl Installer {
                     version,
                     artifact: Artifact {
                         url: asset.browser_download_url.clone(),
-                        sha256,
+                        integrity: ArtifactIntegrity::Sha256(sha256),
                         file_name: asset_name,
                         format: ArchiveFormat::Zip,
                         strip_components: runtime.strip_components(),
@@ -453,16 +701,32 @@ impl Installer {
             .map_err(InstallerError::Io)
     }
 
+    fn tool_install_lock(
+        &self,
+        kind: PackageManagerKind,
+        version: &Version,
+    ) -> Result<File, InstallerError> {
+        let directory = self.storage.cache_dir().join("locks");
+        fs::create_dir_all(&directory).map_err(InstallerError::Io)?;
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(directory.join(format!("tool-{kind}-{version}.lock")))
+            .map_err(InstallerError::Io)
+    }
+
     fn obtain_archive(&self, artifact: &Artifact) -> Result<PathBuf, InstallerError> {
         let directory = self.storage.cache_dir().join("downloads");
         fs::create_dir_all(&directory).map_err(InstallerError::Io)?;
         let path = directory.join(format!(
             "{}.{}",
-            artifact.sha256,
+            artifact.integrity.cache_key(),
             artifact.format.cache_extension()
         ));
         if path.is_file() {
-            if verify_sha256(&path, &artifact.sha256).is_ok() {
+            if artifact.integrity.verify(&path).is_ok() {
                 return Ok(path);
             }
             fs::remove_file(&path).map_err(InstallerError::Io)?;
@@ -473,7 +737,7 @@ impl Installer {
             .tempfile_in(&directory)
             .map_err(InstallerError::Io)?;
         self.http.download(&artifact.url, temporary.path())?;
-        verify_sha256(temporary.path(), &artifact.sha256)?;
+        artifact.integrity.verify(temporary.path())?;
         temporary
             .persist(&path)
             .map_err(|error| InstallerError::Io(error.error))?;
@@ -481,10 +745,23 @@ impl Installer {
     }
 
     fn metadata_text(&self, url: &str) -> Result<String, InstallerError> {
+        self.metadata_text_inner(url, false)
+    }
+
+    fn npm_metadata_text(&self, url: &str) -> Result<String, InstallerError> {
+        self.metadata_text_inner(url, true)
+    }
+
+    fn metadata_text_inner(&self, url: &str, npm_metadata: bool) -> Result<String, InstallerError> {
         ensure_https(url)?;
         let directory = self.storage.cache_dir().join("metadata");
         fs::create_dir_all(&directory).map_err(InstallerError::Io)?;
-        let cache_key = format!("{:x}", Sha256::digest(url.as_bytes()));
+        let cache_source = if npm_metadata {
+            format!("npm:{url}")
+        } else {
+            url.to_owned()
+        };
+        let cache_key = format!("{:x}", Sha256::digest(cache_source.as_bytes()));
         let cache_path = directory.join(format!("{cache_key}.txt"));
         let cached = fs::read_to_string(&cache_path).ok();
         let fresh = fs::metadata(&cache_path)
@@ -503,7 +780,12 @@ impl Installer {
             });
         }
 
-        match self.http.get_text(url) {
+        let response = if npm_metadata {
+            self.http.get_npm_metadata(url)
+        } else {
+            self.http.get_text(url)
+        };
+        match response {
             Ok(contents) => {
                 write_cache_file(&cache_path, contents.as_bytes())?;
                 Ok(contents)
@@ -518,6 +800,25 @@ struct NodeRelease {
     version: String,
     lts: serde_json::Value,
     files: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmPackageMetadata {
+    #[serde(rename = "dist-tags")]
+    dist_tags: BTreeMap<String, String>,
+    versions: BTreeMap<String, NpmVersionMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmVersionMetadata {
+    version: String,
+    dist: NpmDistribution,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmDistribution {
+    tarball: String,
+    integrity: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -815,6 +1116,36 @@ pub fn verify_sha256(path: &Path, expected: &str) -> Result<(), InstallerError> 
     }
 }
 
+fn verify_sha512(path: &Path, expected: &str) -> Result<(), InstallerError> {
+    let expected_bytes = BASE64
+        .decode(expected)
+        .map_err(|_| InstallerError::InvalidIntegrity(format!("sha512-{expected}")))?;
+    if expected_bytes.len() != 64 {
+        return Err(InstallerError::InvalidIntegrity(format!(
+            "sha512-{expected}"
+        )));
+    }
+    let mut file = File::open(path).map_err(InstallerError::Io)?;
+    let mut hasher = Sha512::new();
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(InstallerError::Io)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual_bytes = hasher.finalize();
+    if actual_bytes.as_slice() == expected_bytes {
+        Ok(())
+    } else {
+        Err(InstallerError::ChecksumMismatch {
+            expected: format!("sha512-{expected}"),
+            actual: format!("sha512-{}", BASE64.encode(actual_bytes)),
+        })
+    }
+}
+
 fn extract_archive(
     archive: &Path,
     destination: &Path,
@@ -1103,7 +1434,7 @@ struct InstallManifest<'a> {
     runtime: String,
     version: String,
     artifact_url: &'a str,
-    sha256: &'a str,
+    integrity: String,
 }
 
 fn write_manifest(destination: &Path, release: &Release) -> Result<(), InstallerError> {
@@ -1111,10 +1442,33 @@ fn write_manifest(destination: &Path, release: &Release) -> Result<(), Installer
         runtime: release.kind.to_string(),
         version: release.version.to_string(),
         artifact_url: &release.artifact.url,
-        sha256: &release.artifact.sha256,
+        integrity: release.artifact.integrity.to_string(),
     };
     let contents = serde_json::to_vec_pretty(&manifest).map_err(InstallerError::Manifest)?;
     fs::write(destination.join(".jolter-install.json"), contents).map_err(InstallerError::Io)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolInstallManifest<'a> {
+    package_manager: String,
+    version: String,
+    artifact_url: &'a str,
+    integrity: String,
+}
+
+fn write_tool_manifest(
+    destination: &Path,
+    release: &PackageManagerRelease,
+) -> Result<(), InstallerError> {
+    let manifest = ToolInstallManifest {
+        package_manager: release.kind.to_string(),
+        version: release.version.to_string(),
+        artifact_url: &release.artifact.url,
+        integrity: release.artifact.integrity.to_string(),
+    };
+    let contents = serde_json::to_vec_pretty(&manifest).map_err(InstallerError::Manifest)?;
+    fs::write(destination.join(".jolter-tool.json"), contents).map_err(InstallerError::Io)
 }
 
 #[derive(Debug, Error)]
@@ -1127,6 +1481,10 @@ pub enum InstallerError {
     InvalidArtifactName(String),
     #[error("SHA256 checksum `{0}` must contain exactly 64 hexadecimal characters")]
     InvalidChecksum(String),
+    #[error("invalid artifact integrity value `{0}`")]
+    InvalidIntegrity(String),
+    #[error("unsupported artifact integrity `{0}`; expected SHA-512 SRI")]
+    UnsupportedIntegrity(String),
     #[error("artifact checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
     #[error("checksum metadata did not contain an entry for `{file}`")]
@@ -1165,6 +1523,8 @@ pub enum InstallerError {
     },
     #[error("no stable release satisfies {0}")]
     VersionNotFound(RuntimeRequest),
+    #[error("no stable package manager release satisfies {0}")]
+    PackageManagerVersionNotFound(PackageManagerRequest),
     #[error("release {version} does not provide required asset `{asset}`")]
     AssetNotFound { version: Version, asset: String },
     #[error("unsupported operating system `{0}`")]
@@ -1175,6 +1535,10 @@ pub enum InstallerError {
     UnsupportedBunCpu,
     #[error("existing runtime installation at {path} is incomplete")]
     CorruptInstallation { path: PathBuf },
+    #[error("existing package manager installation at {path} is incomplete")]
+    CorruptToolInstallation { path: PathBuf },
+    #[error("no entrypoint is defined for package manager {0}")]
+    MissingToolEntrypoint(PackageManagerKind),
     #[error("refusing to remove runtime path outside its expected parent: {path}")]
     UnsafeRemoval { path: PathBuf },
     #[error("failed to remove incomplete runtime installation at {path}: {source}")]
@@ -1212,6 +1576,7 @@ pub enum InstallerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::GzEncoder};
     use std::{
         collections::HashMap,
         io::{Cursor, Write},
@@ -1254,7 +1619,7 @@ mod tests {
     fn rejects_insecure_artifact() {
         let artifact = Artifact {
             url: "http://example.test/node.zip".to_owned(),
-            sha256: "a".repeat(64),
+            integrity: ArtifactIntegrity::Sha256("a".repeat(64)),
             file_name: "node.zip".to_owned(),
             format: ArchiveFormat::Zip,
             strip_components: 0,
@@ -1354,6 +1719,62 @@ mod tests {
         assert_eq!(*client.download_count.lock().unwrap(), 1);
     }
 
+    #[test]
+    fn installs_a_verified_package_manager_archive() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        let archive = tar_gz_with_file("package/bin/pnpm.cjs", b"fake pnpm");
+        let integrity = format!("sha512-{}", BASE64.encode(Sha512::digest(&archive)));
+        let metadata_url = "https://registry.npmjs.org/pnpm".to_owned();
+        let download_url = "https://registry.npmjs.org/pnpm/-/pnpm-10.2.0.tgz".to_owned();
+        let metadata = serde_json::json!({
+            "dist-tags": { "latest": "10.2.0" },
+            "versions": {
+                "10.1.0": {
+                    "version": "10.1.0",
+                    "dist": {
+                        "tarball": "https://registry.npmjs.org/pnpm/-/pnpm-10.1.0.tgz",
+                        "integrity": integrity
+                    }
+                },
+                "10.2.0": {
+                    "version": "10.2.0",
+                    "dist": {
+                        "tarball": download_url.clone(),
+                        "integrity": integrity
+                    }
+                }
+            }
+        })
+        .to_string();
+        let client = Arc::new(FakeHttpClient {
+            text: HashMap::from([(metadata_url, metadata)]),
+            downloads: HashMap::from([(download_url, archive)]),
+            text_count: Mutex::new(0),
+            download_count: Mutex::new(0),
+        });
+        let installer = Installer::with_client(
+            storage.clone(),
+            Platform::current().unwrap(),
+            client.clone(),
+        );
+
+        let outcome = installer
+            .install_package_manager(&"pnpm@10".parse().unwrap())
+            .unwrap();
+
+        assert!(outcome.downloaded);
+        assert_eq!(outcome.tool.version, Version::new(10, 2, 0));
+        assert!(
+            storage
+                .tool_entrypoint(PackageManagerKind::Pnpm, &outcome.tool.version, "pnpm")
+                .unwrap()
+                .is_file()
+        );
+        assert!(outcome.tool.path.join(".jolter-tool.json").is_file());
+        assert_eq!(*client.download_count.lock().unwrap(), 1);
+    }
+
     fn zip_with_file(path: &str, contents: &[u8]) -> Vec<u8> {
         let mut cursor = Cursor::new(Vec::new());
         {
@@ -1365,5 +1786,16 @@ mod tests {
             writer.finish().unwrap();
         }
         cursor.into_inner()
+    }
+
+    fn tar_gz_with_file(path: &str, contents: &[u8]) -> Vec<u8> {
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive.append_data(&mut header, path, contents).unwrap();
+        archive.into_inner().unwrap().finish().unwrap()
     }
 }

@@ -2,7 +2,7 @@
 
 Jolter is a Rust workspace split by responsibility:
 
-- `cli`: command parsing, output, and self-shim process dispatch
+- `cli`: command parsing, shell onboarding, output, and self-shim dispatch
 - `core`: orchestration for use, pin, sync, repair, and diagnostics
 - `config`: strict `jolter.json` parsing and atomic writes
 - `runtime`: runtime names and version-selector semantics
@@ -24,6 +24,18 @@ Jolter is a Rust workspace split by responsibility:
 8. Rename the staged directory to its final version path.
 9. Persist the active exact version and regenerate self-shims.
 
+## Package Manager Flow
+
+1. Resolve npm, pnpm, or Yarn from `jolter.json` or
+   `package.json#packageManager`.
+2. Query abbreviated metadata from the official npm registry.
+3. Select the highest stable release matching the requested selector.
+4. Download the published tarball and verify its SHA-512 SRI value.
+5. Extract and publish it atomically under
+   `~/.jolter/tools/<manager>/<version>`.
+6. Dispatch its bundled JavaScript entry point through the Node.js runtime
+   selected for the project.
+
 ## Switching
 
 Each generated shim is the Jolter executable under a tool-specific file name.
@@ -33,3 +45,19 @@ The shim resolves project requirements and chooses the highest complete local
 installation that matches. If the project has no matching requirement, it
 uses the exact globally active version.
 
+## Diagnostics and Inventory
+
+`jolter list` reads storage directories without hiding incomplete
+installations. It reports runtimes and managed package managers as `ready` only
+when their expected executable or entry point exists.
+
+`jolter doctor --json` serializes the same checks and health result used by the
+human-readable command. This keeps automation and interactive diagnostics on
+one behavior path.
+
+## Shell Onboarding
+
+`jolter setup` refreshes the self-shims and emits commands for PowerShell,
+Command Prompt, Bash, Zsh, or Fish. Shell profile and persistent environment
+changes remain explicit user actions; the setup command does not rewrite
+profile files itself.

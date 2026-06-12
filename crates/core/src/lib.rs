@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 
 use jolter_config::{CONFIG_FILE_NAME, ProjectConfig, RuntimeConfig};
 use jolter_doctor::Report;
-use jolter_installer::{InstallOutcome, Installer};
-use jolter_resolver::{PackageManagerRequest, resolve};
-use jolter_runtime::{RuntimeKind, RuntimeRequest};
-use jolter_storage::{InstalledRuntime, Storage};
+use jolter_installer::{InstallOutcome, Installer, ToolInstallOutcome};
+use jolter_resolver::resolve;
+use jolter_runtime::{PackageManagerRequest, RuntimeKind, RuntimeRequest};
+use jolter_storage::{InstalledRuntime, InstalledTool, Storage};
 use thiserror::Error;
 
 pub struct Jolter {
@@ -54,6 +54,10 @@ impl Jolter {
         Ok(self.storage.installed_runtimes()?)
     }
 
+    pub fn list_tools(&self) -> Result<Vec<InstalledTool>, CoreError> {
+        Ok(self.storage.installed_tools()?)
+    }
+
     pub fn doctor(&self, project: &Path) -> Result<Report, CoreError> {
         Ok(jolter_doctor::examine(project, &self.storage)?)
     }
@@ -76,16 +80,25 @@ impl Jolter {
             .runtime
             .ok_or_else(|| CoreError::NoRuntimeRequirement(project.to_path_buf()))?;
         let action = self.ensure_runtime(&runtime.request, repair)?;
-        let package_manager_ready = resolution
+        let package_manager = resolution
             .package_manager
-            .as_ref()
-            .is_some_and(|request| package_manager_exists(&self.storage, &action.runtime, request));
+            .map(|resolved| {
+                if action.runtime.kind != RuntimeKind::Node {
+                    return Err(CoreError::PackageManagerRequiresNode(resolved.request));
+                }
+                let tool = self.ensure_package_manager(&resolved.request, repair)?;
+                Ok(PackageManagerAction {
+                    request: resolved.request,
+                    tool: tool.tool,
+                    downloaded: tool.downloaded,
+                })
+            })
+            .transpose()?;
 
         Ok(SyncOutcome {
             runtime: action.runtime,
             downloaded: action.downloaded,
-            package_manager: resolution.package_manager,
-            package_manager_ready,
+            package_manager,
         })
     }
 
@@ -113,6 +126,26 @@ impl Jolter {
             .activate(outcome.runtime.kind, &outcome.runtime.version)?;
         Ok(RuntimeAction::from(outcome))
     }
+
+    fn ensure_package_manager(
+        &self,
+        request: &PackageManagerRequest,
+        repair: bool,
+    ) -> Result<ToolInstallOutcome, CoreError> {
+        if !request.selector.eq_ignore_ascii_case("latest") {
+            if let Some(tool) = self.storage.find_matching_tool(request)? {
+                return Ok(ToolInstallOutcome {
+                    tool,
+                    downloaded: false,
+                });
+            }
+        }
+        if repair {
+            Ok(self.installer.repair_package_manager(request)?)
+        } else {
+            Ok(self.installer.install_package_manager(request)?)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,26 +167,22 @@ impl From<InstallOutcome> for RuntimeAction {
 pub struct SyncOutcome {
     pub runtime: InstalledRuntime,
     pub downloaded: bool,
-    pub package_manager: Option<PackageManagerRequest>,
-    pub package_manager_ready: bool,
+    pub package_manager: Option<PackageManagerAction>,
 }
 
-fn package_manager_exists(
-    storage: &Storage,
-    runtime: &InstalledRuntime,
-    request: &PackageManagerRequest,
-) -> bool {
-    runtime.kind == RuntimeKind::Node
-        && matches!(request.name.as_str(), "npm" | "npx" | "pnpm" | "yarn")
-        && storage
-            .node_tool_executable(&runtime.version, &request.name)
-            .is_file()
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageManagerAction {
+    pub request: PackageManagerRequest,
+    pub tool: InstalledTool,
+    pub downloaded: bool,
 }
 
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("no runtime requirement was found from {0}")]
     NoRuntimeRequirement(PathBuf),
+    #[error("package manager {0} requires a Node.js runtime")]
+    PackageManagerRequiresNode(PackageManagerRequest),
     #[error(transparent)]
     Config(#[from] jolter_config::ConfigError),
     #[error(transparent)]
@@ -219,5 +248,36 @@ mod tests {
 
         assert_eq!(outcome.runtime.version, version);
         assert!(!outcome.downloaded);
+    }
+
+    #[test]
+    fn sync_uses_an_existing_matching_package_manager_without_network() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(
+            project.path().join(CONFIG_FILE_NAME),
+            r#"{"runtime":{"node":"24"},"packageManager":{"pnpm":"10"}}"#,
+        )
+        .unwrap();
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        let runtime_version = semver::Version::new(24, 1, 0);
+        let executable = storage.runtime_executable(RuntimeKind::Node, &runtime_version);
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"node").unwrap();
+        let tool_version = semver::Version::new(10, 2, 0);
+        let entrypoint = storage
+            .tool_entrypoint(
+                jolter_runtime::PackageManagerKind::Pnpm,
+                &tool_version,
+                "pnpm",
+            )
+            .unwrap();
+        fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        fs::write(entrypoint, b"pnpm").unwrap();
+        let jolter = Jolter::with_storage(storage).unwrap();
+
+        let outcome = jolter.sync(project.path()).unwrap();
+
+        assert_eq!(outcome.package_manager.unwrap().tool.version, tool_version);
     }
 }

@@ -4,7 +4,7 @@ use std::{
 };
 
 use jolter_resolver::resolve;
-use jolter_runtime::{RuntimeKind, RuntimeRequest};
+use jolter_runtime::{PackageManagerRequest, RuntimeKind, RuntimeRequest};
 use jolter_storage::{InstalledRuntime, Storage};
 use semver::Version;
 use thiserror::Error;
@@ -20,6 +20,7 @@ pub enum ShimTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCommand {
     pub executable: PathBuf,
+    pub arguments: Vec<PathBuf>,
     pub runtime_root: PathBuf,
     pub runtime: InstalledRuntime,
 }
@@ -60,9 +61,42 @@ pub fn resolve_command(
             .ok_or(ShimError::RuntimeNotInstalled(request))?,
         None => active_runtime(storage, kind)?,
     };
-    let executable = match target {
-        ShimTarget::Runtime(_) => storage.runtime_executable(kind, &runtime.version),
-        ShimTarget::NodeTool(tool) => storage.node_tool_executable(&runtime.version, tool),
+    let (executable, arguments) = match target {
+        ShimTarget::Runtime(_) => (
+            storage.runtime_executable(kind, &runtime.version),
+            Vec::new(),
+        ),
+        ShimTarget::NodeTool(command) => {
+            let managed = project_resolution
+                .package_manager
+                .filter(|resolved| resolved.request.kind.entrypoint(command).is_some());
+            if let Some(resolved) = managed {
+                let tool = storage
+                    .find_matching_tool(&resolved.request)?
+                    .ok_or_else(|| ShimError::ToolNotInstalled(resolved.request.clone()))?;
+                let entrypoint = storage
+                    .tool_entrypoint(tool.kind, &tool.version, command)
+                    .ok_or_else(|| ShimError::ExecutableNotFound {
+                        command: command.to_owned(),
+                        path: tool.path.clone(),
+                    })?;
+                if !entrypoint.is_file() {
+                    return Err(ShimError::ExecutableNotFound {
+                        command: command.to_owned(),
+                        path: entrypoint,
+                    });
+                }
+                (
+                    storage.runtime_executable(RuntimeKind::Node, &runtime.version),
+                    vec![entrypoint],
+                )
+            } else {
+                (
+                    storage.node_tool_executable(&runtime.version, command),
+                    Vec::new(),
+                )
+            }
+        }
     };
     if !executable.is_file() {
         return Err(ShimError::ExecutableNotFound {
@@ -73,6 +107,7 @@ pub fn resolve_command(
 
     Ok(ResolvedCommand {
         executable,
+        arguments,
         runtime_root: runtime.path.clone(),
         runtime,
     })
@@ -158,6 +193,8 @@ pub enum ShimError {
     UnsupportedCommand(String),
     #[error("runtime required by the project is not installed: {0}")]
     RuntimeNotInstalled(RuntimeRequest),
+    #[error("package manager required by the project is not installed: {0}")]
+    ToolNotInstalled(PackageManagerRequest),
     #[error("no active {0} runtime; run `jolter use {0}@<version>`")]
     NoActiveRuntime(RuntimeKind),
     #[error("active {kind}@{version} runtime is missing from {path}")]
@@ -222,5 +259,38 @@ mod tests {
         let resolved = resolve_command("node", project.path(), &storage).unwrap();
 
         assert_eq!(resolved.runtime.version, Version::new(24, 1, 0));
+        assert!(resolved.arguments.is_empty());
+    }
+
+    #[test]
+    fn resolves_managed_package_manager_through_project_node() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+        fs::write(
+            project.path().join("jolter.json"),
+            r#"{"runtime":{"node":"24"},"packageManager":{"pnpm":"10"}}"#,
+        )
+        .unwrap();
+        let node_version = Version::new(24, 1, 0);
+        let node = storage.runtime_executable(RuntimeKind::Node, &node_version);
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(&node, b"node").unwrap();
+        let pnpm_version = Version::new(10, 2, 0);
+        let pnpm = storage
+            .tool_entrypoint(
+                jolter_runtime::PackageManagerKind::Pnpm,
+                &pnpm_version,
+                "pnpm",
+            )
+            .unwrap();
+        fs::create_dir_all(pnpm.parent().unwrap()).unwrap();
+        fs::write(&pnpm, b"pnpm").unwrap();
+
+        let resolved = resolve_command("pnpm", project.path(), &storage).unwrap();
+
+        assert_eq!(resolved.executable, node);
+        assert_eq!(resolved.arguments, vec![pnpm]);
     }
 }

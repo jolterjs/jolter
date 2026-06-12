@@ -7,6 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+jolter-runtime = { path = "../runtime" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

@@ -3,6 +3,3 @@
 /.vscode/
 *.swp
 *.tmp
-*.md
-!README.md
-!docs/**/*.md

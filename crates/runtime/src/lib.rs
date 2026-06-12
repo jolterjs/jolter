@@ -10,6 +10,62 @@ pub enum RuntimeKind {
     Deno,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PackageManagerKind {
+    Npm,
+    Pnpm,
+    Yarn,
+}
+
+impl PackageManagerKind {
+    pub const ALL: [Self; 3] = [Self::Npm, Self::Pnpm, Self::Yarn];
+
+    #[must_use]
+    pub const fn registry_package(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::Pnpm => "pnpm",
+            Self::Yarn => "@yarnpkg/cli-dist",
+        }
+    }
+
+    #[must_use]
+    pub fn entrypoint(self, command: &str) -> Option<&'static str> {
+        match (self, command) {
+            (Self::Npm, "npm") => Some("bin/npm-cli.js"),
+            (Self::Npm, "npx") => Some("bin/npx-cli.js"),
+            (Self::Pnpm, "pnpm") => Some("bin/pnpm.cjs"),
+            (Self::Yarn, "yarn") => Some("bin/yarn.js"),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for PackageManagerKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Npm => "npm",
+            Self::Pnpm => "pnpm",
+            Self::Yarn => "yarn",
+        })
+    }
+}
+
+impl FromStr for PackageManagerKind {
+    type Err = PackageManagerRequestError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "npm" => Ok(Self::Npm),
+            "pnpm" => Ok(Self::Pnpm),
+            "yarn" | "yarnpkg" => Ok(Self::Yarn),
+            _ => Err(PackageManagerRequestError::UnsupportedPackageManager(
+                value.to_owned(),
+            )),
+        }
+    }
+}
+
 impl RuntimeKind {
     pub const ALL: [Self; 3] = [Self::Node, Self::Bun, Self::Deno];
 
@@ -79,28 +135,7 @@ impl RuntimeRequest {
         if selector.eq_ignore_ascii_case("latest") || selector.eq_ignore_ascii_case("lts") {
             return true;
         }
-
-        let components: Vec<_> = selector
-            .trim_end_matches(".x")
-            .split('.')
-            .filter(|component| !component.eq_ignore_ascii_case("x"))
-            .collect();
-        let Ok(numbers) = components
-            .iter()
-            .map(|component| component.parse::<u64>())
-            .collect::<Result<Vec<_>, _>>()
-        else {
-            return false;
-        };
-
-        match numbers.as_slice() {
-            [major] => version.major == *major,
-            [major, minor] => version.major == *major && version.minor == *minor,
-            [major, minor, patch] => {
-                version.major == *major && version.minor == *minor && version.patch == *patch
-            }
-            _ => false,
-        }
+        selector_matches_version(selector, version)
     }
 
     #[must_use]
@@ -137,6 +172,59 @@ impl FromStr for RuntimeRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageManagerRequest {
+    pub kind: PackageManagerKind,
+    pub selector: String,
+}
+
+impl PackageManagerRequest {
+    pub fn new(
+        kind: PackageManagerKind,
+        selector: impl Into<String>,
+    ) -> Result<Self, PackageManagerRequestError> {
+        let selector = selector.into();
+        let selector = selector.trim().trim_start_matches('v');
+        if selector.is_empty() {
+            return Err(PackageManagerRequestError::MissingSelector);
+        }
+        if selector.contains(char::is_whitespace) || selector.contains('@') {
+            return Err(PackageManagerRequestError::InvalidSelector(
+                selector.to_owned(),
+            ));
+        }
+        validate_numeric_selector(selector)
+            .map_err(|()| PackageManagerRequestError::InvalidSelector(selector.to_owned()))?;
+
+        Ok(Self {
+            kind,
+            selector: selector.to_owned(),
+        })
+    }
+
+    #[must_use]
+    pub fn matches_version(&self, version: &Version) -> bool {
+        selector_matches_version(&self.selector, version)
+    }
+}
+
+impl fmt::Display for PackageManagerRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}@{}", self.kind, self.selector)
+    }
+}
+
+impl FromStr for PackageManagerRequest {
+    type Err = PackageManagerRequestError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (kind, selector) = value
+            .rsplit_once('@')
+            .ok_or(PackageManagerRequestError::MissingSeparator)?;
+        Self::new(kind.parse()?, selector)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RuntimeRequestError {
     #[error("runtime request must use the form <runtime>@<version>, for example node@24")]
@@ -151,6 +239,18 @@ pub enum RuntimeRequestError {
     LtsUnsupported,
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PackageManagerRequestError {
+    #[error("package manager request must use the form <manager>@<version>, for example pnpm@10")]
+    MissingSeparator,
+    #[error("package manager selector cannot be empty")]
+    MissingSelector,
+    #[error("unsupported package manager `{0}`; expected npm, pnpm, or yarn")]
+    UnsupportedPackageManager(String),
+    #[error("invalid package manager selector `{0}`")]
+    InvalidSelector(String),
+}
+
 fn validate_selector(kind: RuntimeKind, selector: &str) -> Result<(), RuntimeRequestError> {
     if selector.eq_ignore_ascii_case("latest") {
         return Ok(());
@@ -163,9 +263,18 @@ fn validate_selector(kind: RuntimeKind, selector: &str) -> Result<(), RuntimeReq
         };
     }
 
+    validate_numeric_selector(selector)
+        .map_err(|()| RuntimeRequestError::InvalidSelector(selector.to_owned()))
+}
+
+fn validate_numeric_selector(selector: &str) -> Result<(), ()> {
+    if selector.eq_ignore_ascii_case("latest") {
+        return Ok(());
+    }
+
     let components: Vec<_> = selector.split('.').collect();
     if components.is_empty() || components.len() > 3 {
-        return Err(RuntimeRequestError::InvalidSelector(selector.to_owned()));
+        return Err(());
     }
     let mut wildcard_seen = false;
     for component in components {
@@ -177,10 +286,43 @@ fn validate_selector(kind: RuntimeKind, selector: &str) -> Result<(), RuntimeReq
                 .chars()
                 .all(|character| character.is_ascii_digit())
         {
-            return Err(RuntimeRequestError::InvalidSelector(selector.to_owned()));
+            return Err(());
         }
     }
     Ok(())
+}
+
+fn selector_matches_version(selector: &str, version: &Version) -> bool {
+    if selector.eq_ignore_ascii_case("latest") {
+        return true;
+    }
+    if selector == "*" || selector.eq_ignore_ascii_case("x") {
+        return true;
+    }
+
+    let components: Vec<_> = selector
+        .trim_end_matches(".x")
+        .split('.')
+        .filter(|component| {
+            !component.eq_ignore_ascii_case("x") && !component.eq_ignore_ascii_case("*")
+        })
+        .collect();
+    let Ok(numbers) = components
+        .iter()
+        .map(|component| component.parse::<u64>())
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+
+    match numbers.as_slice() {
+        [major] => version.major == *major,
+        [major, minor] => version.major == *major && version.minor == *minor,
+        [major, minor, patch] => {
+            version.major == *major && version.minor == *minor && version.patch == *patch
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -240,5 +382,18 @@ mod tests {
             "bun@lts".parse::<RuntimeRequest>(),
             Err(RuntimeRequestError::LtsUnsupported)
         ));
+    }
+
+    #[test]
+    fn parses_and_matches_package_manager_requests() {
+        let request: PackageManagerRequest = "pnpm@10.x".parse().unwrap();
+        assert_eq!(request.kind, PackageManagerKind::Pnpm);
+        assert!(request.matches_version(&Version::new(10, 34, 3)));
+        assert!(!request.matches_version(&Version::new(11, 0, 0)));
+        assert!(
+            "@yarnpkg/cli-dist@4"
+                .parse::<PackageManagerRequest>()
+                .is_err()
+        );
     }
 }

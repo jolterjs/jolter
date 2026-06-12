@@ -4,7 +4,7 @@ use std::{
     process::{Command as ProcessCommand, ExitCode},
 };
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use jolter_core::{Jolter, SyncOutcome};
 use jolter_doctor::CheckStatus;
 use jolter_runtime::{RuntimeKind, RuntimeRequest};
@@ -21,6 +21,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Install shims and print shell-specific PATH setup commands.
+    Setup {
+        /// Shell to configure. Auto detects the current shell where possible.
+        #[arg(long, value_enum, default_value_t = SetupShell::Auto)]
+        shell: SetupShell,
+    },
     /// Install and activate a runtime.
     Use {
         /// Runtime request, for example node@24.
@@ -31,14 +37,28 @@ enum Command {
         /// Runtime request, for example node@24.
         runtime: RuntimeRequest,
     },
-    /// List locally installed runtimes.
+    /// List locally installed runtimes and package managers.
     List,
     /// Check project toolchain health.
-    Doctor,
+    Doctor {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Repair detected toolchain problems.
     Repair,
     /// Synchronize the local toolchain with project requirements.
     Sync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SetupShell {
+    Auto,
+    Powershell,
+    Cmd,
+    Bash,
+    Zsh,
+    Fish,
 }
 
 fn main() -> ExitCode {
@@ -66,6 +86,11 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
     let current_dir = env::current_dir().map_err(CliError::CurrentDirectory)?;
 
     match cli.command {
+        Command::Setup { shell } => {
+            install_shims(&jolter)?;
+            print_setup(&jolter, resolve_setup_shell(shell));
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Use { runtime } => {
             let action = jolter.use_runtime(&runtime)?;
             install_shims(&jolter)?;
@@ -91,43 +116,10 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::List => {
-            let installed = jolter.list()?;
-            if installed.is_empty() {
-                println!("No runtimes installed.");
-            } else {
-                for runtime in installed {
-                    let active = jolter.storage().active_version(runtime.kind)?;
-                    let marker = if active.as_ref() == Some(&runtime.version) {
-                        "*"
-                    } else {
-                        " "
-                    };
-                    println!(
-                        "{marker} {}@{}\t{}",
-                        runtime.kind,
-                        runtime.version,
-                        runtime.path.display()
-                    );
-                }
-            }
+            print_inventory(&jolter)?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Doctor => {
-            let report = jolter.doctor(&current_dir)?;
-            for check in &report.checks {
-                let symbol = match check.status {
-                    CheckStatus::Pass => "ok",
-                    CheckStatus::Warning => "warn",
-                    CheckStatus::Fail => "fail",
-                };
-                println!("[{symbol}] {}: {}", check.name, check.message);
-            }
-            Ok(if report.is_healthy() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            })
-        }
+        Command::Doctor { json } => run_doctor(&jolter, &current_dir, json),
         Command::Sync => {
             let outcome = jolter.sync(&current_dir)?;
             install_shims(&jolter)?;
@@ -143,6 +135,198 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
     }
 }
 
+fn print_inventory(jolter: &Jolter) -> Result<(), CliError> {
+    let runtimes = jolter.list()?;
+    let tools = jolter.list_tools()?;
+    if runtimes.is_empty() && tools.is_empty() {
+        println!("No runtimes or package managers installed.");
+        return Ok(());
+    }
+    if !runtimes.is_empty() {
+        println!("Runtimes:");
+        for runtime in runtimes {
+            let active = jolter.storage().active_version(runtime.kind)?;
+            let marker = if active.as_ref() == Some(&runtime.version) {
+                "*"
+            } else {
+                " "
+            };
+            println!(
+                "{marker} {}@{} [{}]\t{}",
+                runtime.kind,
+                runtime.version,
+                installation_status(runtime.is_complete()),
+                runtime.path.display()
+            );
+        }
+    }
+    if !tools.is_empty() {
+        println!("Package managers:");
+        for tool in tools {
+            println!(
+                "  {}@{} [{}]\t{}",
+                tool.kind,
+                tool.version,
+                installation_status(tool.is_complete()),
+                tool.path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run_doctor(jolter: &Jolter, project: &Path, json: bool) -> Result<ExitCode, CliError> {
+    let report = jolter.doctor(project)?;
+    if json {
+        let output = serde_json::json!({
+            "healthy": report.is_healthy(),
+            "checks": &report.checks,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).map_err(CliError::Json)?
+        );
+    } else {
+        for check in &report.checks {
+            let symbol = match check.status {
+                CheckStatus::Pass => "ok",
+                CheckStatus::Warning => "warn",
+                CheckStatus::Fail => "fail",
+            };
+            println!("[{symbol}] {}: {}", check.name, check.message);
+        }
+    }
+    Ok(if report.is_healthy() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+const fn installation_status(complete: bool) -> &'static str {
+    if complete { "ready" } else { "incomplete" }
+}
+
+fn print_setup(jolter: &Jolter, shell: SetupShell) {
+    let shims = jolter.storage().shims_dir();
+    println!("Installed Jolter shims in {}", shims.display());
+    if path_contains(&shims) {
+        println!("Jolter shims are already available on PATH in this process.");
+        return;
+    }
+
+    println!("Add the shims directory to PATH:");
+    match shell {
+        SetupShell::Powershell => {
+            let path = powershell_quote(&shims);
+            println!("\nCurrent PowerShell session:");
+            println!("$env:PATH = '{path};' + $env:PATH");
+            println!("\nPersist for the current user:");
+            println!("{}", powershell_persist_command(&path));
+        }
+        SetupShell::Cmd => {
+            let display = shims.display();
+            let path = powershell_quote(&shims);
+            println!("\nCurrent Command Prompt session:");
+            println!("set \"PATH={display};%PATH%\"");
+            println!("\nPersist for the current user:");
+            println!(
+                "powershell -NoProfile -Command \"{}\"",
+                powershell_persist_script(&format!("'{path}'"))
+            );
+        }
+        SetupShell::Bash | SetupShell::Zsh => {
+            let path = posix_double_quote_content(&shims);
+            let export = format!("export PATH=\"{path}:$PATH\"");
+            let profile = if shell == SetupShell::Zsh {
+                "~/.zshrc"
+            } else {
+                "~/.bashrc"
+            };
+            println!("\nCurrent shell session:");
+            println!("{export}");
+            println!("\nPersist for future sessions:");
+            println!("printf '%s\\n' {} >> {profile}", posix_quote(&export));
+        }
+        SetupShell::Fish => {
+            println!("\nCurrent and future Fish sessions:");
+            println!("fish_add_path {}", posix_quote(&shims.to_string_lossy()));
+        }
+        SetupShell::Auto => unreachable!("auto shell must be resolved before printing setup"),
+    }
+    println!("\nRestart the shell after applying persistent PATH changes.");
+}
+
+fn resolve_setup_shell(shell: SetupShell) -> SetupShell {
+    if shell != SetupShell::Auto {
+        return shell;
+    }
+    if cfg!(windows) {
+        return SetupShell::Powershell;
+    }
+    let detected = env::var_os("SHELL")
+        .and_then(|value| {
+            PathBuf::from(value)
+                .file_stem()
+                .map(std::borrow::ToOwned::to_owned)
+        })
+        .map(|name| name.to_string_lossy().to_ascii_lowercase());
+    match detected.as_deref() {
+        Some("zsh") => SetupShell::Zsh,
+        Some("fish") => SetupShell::Fish,
+        _ => SetupShell::Bash,
+    }
+}
+
+fn path_contains(directory: &Path) -> bool {
+    env::var_os("PATH")
+        .is_some_and(|value| env::split_paths(&value).any(|entry| same_path(&entry, directory)))
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
+    }
+}
+
+fn powershell_quote(path: &Path) -> String {
+    path.to_string_lossy().replace('\'', "''")
+}
+
+fn powershell_persist_command(path: &str) -> String {
+    format!(
+        "$jolter = '{path}'; {}",
+        powershell_persist_script("$jolter")
+    )
+}
+
+fn powershell_persist_script(path_expression: &str) -> String {
+    format!(
+        "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User'); \
+if (-not $userPath) {{ $userPath = '' }}; \
+if (($userPath -split ';') -notcontains {path_expression}) {{ \
+[Environment]::SetEnvironmentVariable('Path', \
+(($userPath.TrimEnd(';') + ';' + {path_expression}).Trim(';')), 'User') }}"
+    )
+}
+
+fn posix_double_quote_content(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`")
+}
+
+fn posix_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn print_sync_outcome(prefix: &str, outcome: &SyncOutcome) {
     println!(
         "{prefix} {}@{} at {}",
@@ -151,17 +335,17 @@ fn print_sync_outcome(prefix: &str, outcome: &SyncOutcome) {
         outcome.runtime.path.display()
     );
     if let Some(package_manager) = &outcome.package_manager {
-        if outcome.package_manager_ready {
-            println!(
-                "Package manager {}@{} is available.",
-                package_manager.name, package_manager.selector
-            );
+        let verb = if package_manager.downloaded {
+            "Installed"
         } else {
-            println!(
-                "warning: package manager {}@{} is configured but not installed",
-                package_manager.name, package_manager.selector
-            );
-        }
+            "Selected"
+        };
+        println!(
+            "{verb} package manager {}@{} at {}",
+            package_manager.tool.kind,
+            package_manager.tool.version,
+            package_manager.tool.path.display()
+        );
     }
 }
 
@@ -185,6 +369,7 @@ fn run_shim(shim: &str) -> Result<ExitCode, CliError> {
     let current_dir = env::current_dir().map_err(CliError::CurrentDirectory)?;
     let resolved = resolve_command(shim, &current_dir, &storage)?;
     let mut command = runtime_command(&resolved.executable);
+    command.args(&resolved.arguments);
     command.args(env::args_os().skip(1));
     prepend_runtime_path(&mut command, resolved.runtime.kind, &resolved.runtime_root)?;
 
@@ -254,4 +439,6 @@ enum CliError {
     },
     #[error("failed to construct runtime PATH: {0}")]
     JoinPath(#[source] env::JoinPathsError),
+    #[error("failed to serialize command output: {0}")]
+    Json(#[source] serde_json::Error),
 }
