@@ -12,6 +12,26 @@ Jolter is a Rust workspace split by responsibility:
 - `doctor`: non-destructive environment diagnostics
 - `storage`: global layout, installed versions, and active selections
 
+## Output Flow
+
+Core and installer operations emit structured progress events instead of
+writing directly to a terminal. Events cover selection, resolution, cache
+reuse, connection, byte transfer, verification, extraction, publication,
+activation, removal, cleanup, diagnostics, configuration, and shim refresh.
+
+The CLI renderer owns presentation:
+
+- interactive terminals redraw one compact status line on standard error;
+- CI and non-terminal streams receive deterministic line-oriented events;
+- ANSI styling is limited to terminal hosts that advertise color support,
+  including an automatic plain-text fallback for legacy Windows consoles;
+- structured list rows are width-aligned by the renderer without tab stops;
+- JSON and completion commands suppress decorative events;
+- final command results remain on standard output.
+
+This separation keeps installer behavior testable and allows future output
+formats without coupling provider code to terminal escape sequences.
+
 ## Runtime Flow
 
 1. Resolve a selector against official release metadata.

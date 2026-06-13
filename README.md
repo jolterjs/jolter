@@ -33,6 +33,8 @@ passed through a release-candidate period.
 - uninstall exact versions, prune old versions, and clean caches safely
 - prepare project toolchains for CI with `jolter setup-ci`
 - generate Bash, Zsh, Fish, Elvish, and PowerShell completions
+- show live runtime and package-manager download progress with current actions
+- provide deterministic CI output through global terminal-control flags
 - enforce at least 80% line coverage in CI
 
 ## Build
@@ -107,6 +109,24 @@ jolter completions bash
 jolter completions powershell
 ```
 
+Control terminal output globally:
+
+```bash
+jolter use node@24 --no-progress
+jolter sync --no-color
+jolter setup-ci --quiet
+jolter use pnpm@10 --verbose
+```
+
+Interactive terminals receive a single updating `[jolter]` line with the current
+action, download bytes, percentage, and transfer rate. CI and redirected
+output automatically use stable line-oriented logs. Progress is written to
+standard error, while final results and JSON remain on standard output.
+ANSI color is emitted only when the terminal advertises support, so legacy
+Windows Command Prompt sessions automatically fall back to clean plain text.
+The `list` command calculates its status and path columns from the installed
+tool names instead of relying on terminal tab stops.
+
 `setup`, `use`, `sync`, and `repair` generate shims for `node`, `npm`, `npx`,
 `pnpm`, `yarn`, `bun`, and `deno` in the Jolter shims directory:
 
@@ -147,6 +167,8 @@ support the selected Node.js version according to its `engines.node` range.
 - `JOLTER_HOME` overrides the default `~/.jolter` storage location.
 - `JOLTER_OFFLINE=1` disables metadata requests and requires cached metadata
   and archives.
+- `JOLTER_NO_PROGRESS=1` disables in-place progress updates.
+- `JOLTER_NO_COLOR=1` and the standard `NO_COLOR` variable disable ANSI color.
 
 See [shell setup](docs/setup.md), [diagnostics](docs/diagnostics.md),
 [the architecture notes](docs/architecture.md), and the

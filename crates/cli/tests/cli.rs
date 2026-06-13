@@ -42,6 +42,47 @@ fn pin_writes_project_configuration() {
 }
 
 #[test]
+fn global_output_flags_control_operational_logging() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+
+    let plain = jolter_command(project.path(), home.path())
+        .args(["pin", "node@24", "--no-progress", "--no-color"])
+        .output()
+        .unwrap();
+    assert!(plain.status.success());
+    let stderr = String::from_utf8_lossy(&plain.stderr);
+    assert!(stderr.contains("[jolter] config"));
+    assert!(!stderr.contains('\r'));
+
+    let quiet = jolter_command(project.path(), home.path())
+        .args(["pin", "node@22", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    assert!(quiet.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&quiet.stdout).contains("Pinned node@22"));
+}
+
+#[test]
+fn help_documents_terminal_output_controls() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+
+    let output = jolter_command(project.path(), home.path())
+        .arg("--help")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--no-progress"));
+    assert!(stdout.contains("--no-color"));
+    assert!(stdout.contains("--quiet"));
+    assert!(stdout.contains("--verbose"));
+}
+
+#[test]
 fn use_activates_an_installed_package_manager() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
@@ -84,7 +125,10 @@ fn use_activates_an_installed_package_manager() {
         .output()
         .unwrap();
     assert!(list.status.success());
-    assert!(String::from_utf8_lossy(&list.stdout).contains("* pnpm@10.2.0 [ready]"));
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(list_stdout.contains("* pnpm@10.2.0"));
+    assert!(list_stdout.contains("[ready]"));
+    assert!(list.stderr.is_empty());
 }
 
 #[test]
@@ -134,8 +178,53 @@ fn list_reports_managed_package_managers_and_health() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Package managers:"));
-    assert!(stdout.contains("pnpm@10.2.0 [ready]"));
-    assert!(stdout.contains("yarn@4.1.0 [incomplete]"));
+    assert!(stdout.contains("pnpm@10.2.0"));
+    assert!(stdout.contains("yarn@4.1.0"));
+    assert!(stdout.contains("[ready]"));
+    assert!(stdout.contains("[incomplete]"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn list_aligns_status_and_path_columns_without_tabs() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let node = runtime_executable(home.path(), "node", "24.16.0");
+    fs::create_dir_all(node.parent().unwrap()).unwrap();
+    fs::write(&node, b"node").unwrap();
+    let bun_root = home.path().join("runtimes").join("bun").join("1.2.3");
+    fs::create_dir_all(&bun_root).unwrap();
+
+    let output = jolter_command(project.path(), home.path())
+        .arg("list")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let bun_line = stdout
+        .lines()
+        .find(|line| line.contains("bun@1.2.3"))
+        .unwrap();
+    let node_line = stdout
+        .lines()
+        .find(|line| line.contains("node@24.16.0"))
+        .unwrap();
+    assert_eq!(bun_line.find("[incomplete]"), node_line.find("[ready]"));
+    assert_eq!(
+        bun_line.find(&bun_root.display().to_string()),
+        node_line.find(
+            &home
+                .path()
+                .join("runtimes")
+                .join("node")
+                .join("24.16.0")
+                .display()
+                .to_string()
+        )
+    );
+    assert!(!stdout.contains('\t'));
+    assert!(output.stderr.is_empty());
 }
 
 #[test]
@@ -161,6 +250,7 @@ fn doctor_can_emit_json() {
             .is_some_and(|checks| !checks.is_empty())
     );
     assert_eq!(value["checks"][0]["status"], "pass");
+    assert!(output.stderr.is_empty());
 }
 
 #[test]

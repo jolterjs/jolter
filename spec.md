@@ -260,6 +260,44 @@ and cache paths for automation.
 
 ---
 
+## Terminal Output
+
+Interactive runtime and package manager installation displays a single
+auto-updating status line on standard error. Download status includes the
+current action, artifact name, transferred bytes, percentage when known, and
+transfer rate.
+
+```text
+[jolter] / fetch    node-v24.1.0-win-x64.zip [======>...........] 37% 18.1 MiB/48.2 MiB 8.4 MiB/s
+```
+
+Global output controls:
+
+```bash
+jolter use node@24 --no-progress
+jolter sync --no-color
+jolter setup-ci --quiet
+jolter use pnpm@10 --verbose
+```
+
+Requirements:
+
+* progress is written to standard error
+* final command results remain on standard output
+* JSON and completion output contain no decorative logging
+* non-interactive and detected CI environments use stable line-oriented logs
+* `--no-progress` disables in-place updates
+* `--no-color` disables ANSI color
+* `--quiet` suppresses operational logs while retaining command results
+* `--verbose` includes transfer timing and rate detail
+* `NO_COLOR`, `JOLTER_NO_COLOR`, and `JOLTER_NO_PROGRESS` are respected
+* ANSI color is enabled only when the terminal advertises support; legacy
+  Windows consoles automatically receive plain text
+* tabular command output calculates column widths so status and path fields
+  remain aligned without terminal-dependent tab stops
+
+---
+
 # Auto Switching
 
 When entering a project directory:

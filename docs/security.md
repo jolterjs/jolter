@@ -45,3 +45,7 @@ the same locking protocol.
 `jolter doctor` may execute an already-installed runtime or package manager
 with `--version`. That probe is bounded to five seconds and captures at most
 16 KiB from each output stream.
+
+Download progress is calculated locally from response byte counts and elapsed
+time. It does not transmit terminal, timing, or usage information and does not
+introduce telemetry.

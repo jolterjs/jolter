@@ -1,9 +1,12 @@
+mod output;
+
 use std::{
     env,
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode},
+    sync::Arc,
 };
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -19,9 +22,27 @@ use jolter_storage::Storage;
 use semver::Version;
 use thiserror::Error;
 
+use crate::output::{
+    ColorPreference, DetailLevel, OutputKind, OutputOptions, ProgressPreference, TableRow,
+    TerminalUi,
+};
+
 #[derive(Debug, Parser)]
 #[command(name = "jolter", version, about = "JavaScript toolchain manager")]
+#[allow(clippy::struct_excessive_bools)]
 struct Cli {
+    /// Disable the live updating progress line.
+    #[arg(long, global = true)]
+    no_progress: bool,
+    /// Disable ANSI colors.
+    #[arg(long, global = true)]
+    no_color: bool,
+    /// Suppress operational progress while retaining command results.
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
+    quiet: bool,
+    /// Include transfer timing and additional operational detail.
+    #[arg(short, long, global = true, conflicts_with = "quiet")]
+    verbose: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -148,67 +169,106 @@ fn main() -> ExitCode {
         };
     }
 
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    let ui = Arc::new(TerminalUi::new(OutputOptions {
+        progress: if cli.no_progress {
+            ProgressPreference::Plain
+        } else {
+            ProgressPreference::Auto
+        },
+        color: if cli.no_color {
+            ColorPreference::Never
+        } else {
+            ColorPreference::Auto
+        },
+        detail: if cli.quiet {
+            DetailLevel::Quiet
+        } else if cli.verbose {
+            DetailLevel::Verbose
+        } else {
+            DetailLevel::Normal
+        },
+        kind: if cli.machine_output() {
+            OutputKind::Machine
+        } else {
+            OutputKind::Human
+        },
+    }));
+    match run(cli, &ui) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("error: {error}");
+            ui.failure(error.to_string());
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(cli: Cli) -> Result<ExitCode, CliError> {
-    let jolter = Jolter::discover()?;
+impl Cli {
+    const fn machine_output(&self) -> bool {
+        matches!(
+            &self.command,
+            Command::List { json: true }
+                | Command::Doctor { json: true }
+                | Command::SetupCi { json: true }
+                | Command::Completions { .. }
+        )
+    }
+}
+
+fn run(cli: Cli, ui: &Arc<TerminalUi>) -> Result<ExitCode, CliError> {
+    let jolter = Jolter::discover_with_reporter(ui.clone())?;
     let current_dir = env::current_dir().map_err(CliError::CurrentDirectory)?;
 
     match cli.command {
         Command::Setup { shell } => {
             install_shims(&jolter)?;
-            print_setup(&jolter, resolve_setup_shell(shell));
+            print_setup(&jolter, resolve_setup_shell(shell), ui);
             Ok(ExitCode::SUCCESS)
         }
-        Command::Use { target } => run_use(&jolter, target),
+        Command::Use { target } => run_use(&jolter, target, ui),
         Command::Pin { runtime } => {
             jolter.pin(&current_dir, &runtime)?;
-            println!(
+            ui.success(format!(
                 "Pinned {runtime} in {}",
                 current_dir.join("jolter.json").display()
-            );
+            ));
             Ok(ExitCode::SUCCESS)
         }
         Command::List { json } => {
             if json {
+                ui.finish_progress();
                 print_inventory_json(&jolter)?;
             } else {
-                print_inventory(&jolter)?;
+                print_inventory(&jolter, ui)?;
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Doctor { json } => run_doctor(&jolter, &current_dir, json),
+        Command::Doctor { json } => run_doctor(&jolter, &current_dir, json, ui),
         Command::Sync => {
             let outcome = jolter.sync(&current_dir)?;
             install_shims(&jolter)?;
-            print_sync_outcome("Synchronized", &outcome);
+            print_sync_outcome("Synchronized", &outcome, ui);
             Ok(ExitCode::SUCCESS)
         }
         Command::Repair => {
             let outcome = jolter.repair(&current_dir)?;
             install_shims(&jolter)?;
-            print_sync_outcome("Repaired", &outcome);
+            print_sync_outcome("Repaired", &outcome, ui);
             Ok(ExitCode::SUCCESS)
         }
-        Command::Uninstall { target, force } => run_uninstall(&jolter, target, force),
-        Command::Prune { keep, dry_run } => run_prune(&jolter, &current_dir, keep, dry_run),
-        Command::Cache { command } => run_cache(&jolter, command),
-        Command::SetupCi { json } => run_setup_ci(&jolter, &current_dir, json),
+        Command::Uninstall { target, force } => run_uninstall(&jolter, target, force, ui),
+        Command::Prune { keep, dry_run } => run_prune(&jolter, &current_dir, keep, dry_run, ui),
+        Command::Cache { command } => run_cache(&jolter, command, ui),
+        Command::SetupCi { json } => run_setup_ci(&jolter, &current_dir, json, ui),
         Command::Completions { shell } => {
+            ui.finish_progress();
             print_completions(shell);
             Ok(ExitCode::SUCCESS)
         }
     }
 }
 
-fn run_use(jolter: &Jolter, target: UseTarget) -> Result<ExitCode, CliError> {
+fn run_use(jolter: &Jolter, target: UseTarget, ui: &TerminalUi) -> Result<ExitCode, CliError> {
     match target {
         UseTarget::Runtime(request) => {
             let action = jolter.use_runtime(&request)?;
@@ -218,12 +278,12 @@ fn run_use(jolter: &Jolter, target: UseTarget) -> Result<ExitCode, CliError> {
             } else {
                 "Activated"
             };
-            println!(
+            ui.success(format!(
                 "{verb} {}@{} at {}",
                 action.runtime.kind,
                 action.runtime.version,
                 action.runtime.path.display()
-            );
+            ));
         }
         UseTarget::PackageManager(request) => {
             let action = jolter.use_package_manager(&request)?;
@@ -233,12 +293,12 @@ fn run_use(jolter: &Jolter, target: UseTarget) -> Result<ExitCode, CliError> {
             } else {
                 "Activated"
             };
-            println!(
+            ui.success(format!(
                 "{verb} package manager {}@{} at {}",
                 action.tool.kind,
                 action.tool.version,
                 action.tool.path.display()
-            );
+            ));
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -248,6 +308,7 @@ fn run_uninstall(
     jolter: &Jolter,
     target: UninstallTarget,
     force: bool,
+    ui: &TerminalUi,
 ) -> Result<ExitCode, CliError> {
     let (name, version, outcome) = match target {
         UninstallTarget::Runtime(kind, version) => {
@@ -259,11 +320,11 @@ fn run_uninstall(
             (kind.to_string(), version, outcome)
         }
     };
-    println!(
+    ui.success(format!(
         "Uninstalled {name}@{version} from {} ({})",
         outcome.path.display(),
         human_bytes(outcome.reclaimed_bytes)
-    );
+    ));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -272,92 +333,105 @@ fn run_prune(
     project: &Path,
     keep: usize,
     dry_run: bool,
+    ui: &TerminalUi,
 ) -> Result<ExitCode, CliError> {
     let outcome = jolter.prune(project, keep, dry_run)?;
-    print_prune_outcome(&outcome);
+    print_prune_outcome(&outcome, ui);
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_cache(jolter: &Jolter, command: CacheCommand) -> Result<ExitCode, CliError> {
+fn run_cache(
+    jolter: &Jolter,
+    command: CacheCommand,
+    ui: &TerminalUi,
+) -> Result<ExitCode, CliError> {
     match command {
         CacheCommand::Status => {
             let stats = jolter.cache_stats()?;
-            println!(
+            ui.info(format!(
                 "Cache: {} file(s), {} at {}",
                 stats.files,
                 human_bytes(stats.bytes),
                 jolter.storage().cache_dir().display()
-            );
+            ));
         }
         CacheCommand::Clean => {
             let outcome = jolter.clean_cache()?;
-            println!(
+            ui.success(format!(
                 "Removed {} cached file(s), reclaiming {}",
                 outcome.removed_files,
                 human_bytes(outcome.reclaimed_bytes)
-            );
+            ));
         }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_setup_ci(jolter: &Jolter, project: &Path, json: bool) -> Result<ExitCode, CliError> {
+fn run_setup_ci(
+    jolter: &Jolter,
+    project: &Path,
+    json: bool,
+    ui: &TerminalUi,
+) -> Result<ExitCode, CliError> {
     let outcome = jolter.sync(project)?;
     install_shims(jolter)?;
     let provider = configure_ci_environment(jolter, &outcome)?;
     if json {
+        ui.finish_progress();
         print_ci_json(jolter, &outcome, provider)?;
     } else {
-        println!("CI provider: {provider}");
-        print_sync_outcome("Synchronized", &outcome);
-        println!("Shims: {}", jolter.storage().shims_dir().display());
-        println!("Cache: {}", jolter.storage().cache_dir().display());
+        ui.info(format!("CI provider: {provider}"));
+        print_sync_outcome("Synchronized", &outcome, ui);
+        ui.detail(format!("Shims: {}", jolter.storage().shims_dir().display()));
+        ui.detail(format!("Cache: {}", jolter.storage().cache_dir().display()));
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn print_inventory(jolter: &Jolter) -> Result<(), CliError> {
+fn print_inventory(jolter: &Jolter, ui: &TerminalUi) -> Result<(), CliError> {
     let runtimes = jolter.list()?;
     let tools = jolter.list_tools()?;
     if runtimes.is_empty() && tools.is_empty() {
-        println!("No runtimes or package managers installed.");
+        ui.info("No runtimes or package managers installed.");
         return Ok(());
     }
     if !runtimes.is_empty() {
-        println!("Runtimes:");
+        ui.heading("Runtimes");
+        let mut rows = Vec::with_capacity(runtimes.len());
         for runtime in runtimes {
             let active = jolter.storage().active_version(runtime.kind)?;
             let marker = if active.as_ref() == Some(&runtime.version) {
-                "*"
+                '*'
             } else {
-                " "
+                ' '
             };
-            println!(
-                "{marker} {}@{} [{}]\t{}",
-                runtime.kind,
-                runtime.version,
-                installation_status(runtime.is_complete()),
-                runtime.path.display()
-            );
+            rows.push(TableRow::new(
+                marker,
+                format!("{}@{}", runtime.kind, runtime.version),
+                format!("[{}]", installation_status(runtime.is_complete())),
+                runtime.path.display().to_string(),
+            ));
         }
+        ui.table(&rows);
     }
     if !tools.is_empty() {
-        println!("Package managers:");
+        ui.heading("Package managers");
+        let mut rows = Vec::with_capacity(tools.len());
         for tool in tools {
             let active = jolter.storage().active_tool_version(tool.kind)?;
             let marker = if active.as_ref() == Some(&tool.version) {
-                "*"
+                '*'
             } else {
-                " "
+                ' '
             };
-            println!(
-                "{marker} {}@{} [{}]\t{}",
-                tool.kind,
-                tool.version,
-                installation_status(tool.is_complete()),
-                tool.path.display()
-            );
+            rows.push(TableRow::new(
+                marker,
+                format!("{}@{}", tool.kind, tool.version),
+                format!("[{}]", installation_status(tool.is_complete())),
+                tool.path.display().to_string(),
+            ));
         }
+        ui.table(&rows);
     }
     Ok(())
 }
@@ -402,9 +476,15 @@ fn print_inventory_json(jolter: &Jolter) -> Result<(), CliError> {
     Ok(())
 }
 
-fn run_doctor(jolter: &Jolter, project: &Path, json: bool) -> Result<ExitCode, CliError> {
+fn run_doctor(
+    jolter: &Jolter,
+    project: &Path,
+    json: bool,
+    ui: &TerminalUi,
+) -> Result<ExitCode, CliError> {
     let report = jolter.doctor(project)?;
     if json {
+        ui.finish_progress();
         let output = serde_json::json!({
             "healthy": report.is_healthy(),
             "checks": &report.checks,
@@ -415,14 +495,14 @@ fn run_doctor(jolter: &Jolter, project: &Path, json: bool) -> Result<ExitCode, C
         );
     } else {
         for check in &report.checks {
-            let symbol = match check.status {
-                CheckStatus::Pass => "ok",
-                CheckStatus::Warning => "warn",
-                CheckStatus::Fail => "fail",
-            };
-            println!("[{symbol}] {}: {}", check.name, check.message);
+            let message = format!("{}: {}", check.name, check.message);
+            match check.status {
+                CheckStatus::Pass => ui.success(message),
+                CheckStatus::Warning => ui.warning(message),
+                CheckStatus::Fail => ui.failure(message),
+            }
             if let Some(remediation) = &check.remediation {
-                println!("  action: {remediation}");
+                ui.line(format!("       action: {remediation}"));
             }
         }
     }
@@ -437,33 +517,33 @@ const fn installation_status(complete: bool) -> &'static str {
     if complete { "ready" } else { "incomplete" }
 }
 
-fn print_setup(jolter: &Jolter, shell: SetupShell) {
+fn print_setup(jolter: &Jolter, shell: SetupShell, ui: &TerminalUi) {
     let shims = jolter.storage().shims_dir();
-    println!("Installed Jolter shims in {}", shims.display());
+    ui.success(format!("Installed Jolter shims in {}", shims.display()));
     if path_contains(&shims) {
-        println!("Jolter shims are already available on PATH in this process.");
+        ui.info("Jolter shims are already available on PATH in this process.");
         return;
     }
 
-    println!("Add the shims directory to PATH:");
+    ui.info("Add the shims directory to PATH:");
     match shell {
         SetupShell::Powershell => {
             let path = powershell_quote(&shims);
-            println!("\nCurrent PowerShell session:");
-            println!("$env:PATH = '{path};' + $env:PATH");
-            println!("\nPersist for the current user:");
-            println!("{}", powershell_persist_command(&path));
+            ui.heading("Current PowerShell session");
+            ui.line(format!("$env:PATH = '{path};' + $env:PATH"));
+            ui.heading("Persist for the current user");
+            ui.line(powershell_persist_command(&path));
         }
         SetupShell::Cmd => {
             let display = shims.display();
             let path = powershell_quote(&shims);
-            println!("\nCurrent Command Prompt session:");
-            println!("set \"PATH={display};%PATH%\"");
-            println!("\nPersist for the current user:");
-            println!(
+            ui.heading("Current Command Prompt session");
+            ui.line(format!("set \"PATH={display};%PATH%\""));
+            ui.heading("Persist for the current user");
+            ui.line(format!(
                 "powershell -NoProfile -Command \"{}\"",
                 powershell_persist_script(&format!("'{path}'"))
-            );
+            ));
         }
         SetupShell::Bash | SetupShell::Zsh => {
             let path = posix_double_quote_content(&shims);
@@ -473,18 +553,24 @@ fn print_setup(jolter: &Jolter, shell: SetupShell) {
             } else {
                 "~/.bashrc"
             };
-            println!("\nCurrent shell session:");
-            println!("{export}");
-            println!("\nPersist for future sessions:");
-            println!("printf '%s\\n' {} >> {profile}", posix_quote(&export));
+            ui.heading("Current shell session");
+            ui.line(&export);
+            ui.heading("Persist for future sessions");
+            ui.line(format!(
+                "printf '%s\\n' {} >> {profile}",
+                posix_quote(&export)
+            ));
         }
         SetupShell::Fish => {
-            println!("\nCurrent and future Fish sessions:");
-            println!("fish_add_path {}", posix_quote(&shims.to_string_lossy()));
+            ui.heading("Current and future Fish sessions");
+            ui.line(format!(
+                "fish_add_path {}",
+                posix_quote(&shims.to_string_lossy())
+            ));
         }
         SetupShell::Auto => unreachable!("auto shell must be resolved before printing setup"),
     }
-    println!("\nRestart the shell after applying persistent PATH changes.");
+    ui.detail("Restart the shell after applying persistent PATH changes.");
 }
 
 fn resolve_setup_shell(shell: SetupShell) -> SetupShell {
@@ -557,31 +643,31 @@ fn posix_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn print_sync_outcome(prefix: &str, outcome: &SyncOutcome) {
-    println!(
+fn print_sync_outcome(prefix: &str, outcome: &SyncOutcome, ui: &TerminalUi) {
+    ui.success(format!(
         "{prefix} {}@{} at {}",
         outcome.runtime.kind,
         outcome.runtime.version,
         outcome.runtime.path.display()
-    );
+    ));
     if let Some(package_manager) = &outcome.package_manager {
         let verb = if package_manager.downloaded {
             "Installed"
         } else {
             "Selected"
         };
-        println!(
+        ui.success(format!(
             "{verb} package manager {}@{} at {}",
             package_manager.tool.kind,
             package_manager.tool.version,
             package_manager.tool.path.display()
-        );
+        ));
     }
 }
 
-fn print_prune_outcome(outcome: &PruneOutcome) {
+fn print_prune_outcome(outcome: &PruneOutcome, ui: &TerminalUi) {
     if outcome.removed.is_empty() {
-        println!("Nothing to prune.");
+        ui.info("Nothing to prune.");
         return;
     }
     let verb = if outcome.dry_run {
@@ -590,21 +676,21 @@ fn print_prune_outcome(outcome: &PruneOutcome) {
         "Removed"
     };
     for item in &outcome.removed {
-        println!(
+        ui.line(format!(
             "{verb} {}@{} from {} ({})",
             item.kind,
             item.version,
             item.path.display(),
             human_bytes(item.reclaimed_bytes)
-        );
+        ));
     }
-    println!(
+    ui.success(format!(
         "{} {} installation(s), reclaiming {}{}",
         if outcome.dry_run { "Planned" } else { "Pruned" },
         outcome.removed.len(),
         human_bytes(outcome.reclaimed_bytes()),
         if outcome.dry_run { " if applied" } else { "" }
-    );
+    ));
 }
 
 fn configure_ci_environment(

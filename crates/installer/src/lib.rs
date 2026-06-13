@@ -222,12 +222,94 @@ pub struct CacheCleanOutcome {
     pub reclaimed_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressAction {
+    Select,
+    Resolve,
+    Reuse,
+    Connect,
+    Download,
+    Verify,
+    Extract,
+    Publish,
+    Activate,
+    Remove,
+    Clean,
+    Diagnose,
+    Configure,
+    Shims,
+}
+
+impl ProgressAction {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Select => "select",
+            Self::Resolve => "resolve",
+            Self::Reuse => "reuse",
+            Self::Connect => "connect",
+            Self::Download => "fetch",
+            Self::Verify => "verify",
+            Self::Extract => "unpack",
+            Self::Publish => "install",
+            Self::Activate => "activate",
+            Self::Remove => "remove",
+            Self::Clean => "clean",
+            Self::Diagnose => "doctor",
+            Self::Configure => "config",
+            Self::Shims => "shims",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressEvent<'a> {
+    Stage {
+        action: ProgressAction,
+        target: &'a str,
+    },
+    DownloadStarted {
+        name: &'a str,
+        total: Option<u64>,
+    },
+    DownloadAdvanced {
+        name: &'a str,
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    DownloadFinished {
+        name: &'a str,
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    CacheHit {
+        name: &'a str,
+    },
+}
+
+pub trait ProgressReporter: Send + Sync {
+    fn report(&self, event: ProgressEvent<'_>);
+}
+
+#[derive(Debug, Default)]
+pub struct NoProgressReporter;
+
+impl ProgressReporter for NoProgressReporter {
+    fn report(&self, _event: ProgressEvent<'_>) {}
+}
+
 pub trait HttpClient: Send + Sync {
     fn get_text(&self, url: &str) -> Result<String, InstallerError>;
     fn get_npm_metadata(&self, url: &str) -> Result<String, InstallerError> {
         self.get_text(url)
     }
-    fn download(&self, url: &str, destination: &Path) -> Result<(), InstallerError>;
+    fn download(
+        &self,
+        url: &str,
+        destination: &Path,
+        name: &str,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<(), InstallerError>;
 }
 
 #[derive(Debug, Clone)]
@@ -330,25 +412,54 @@ impl HttpClient for ReqwestHttpClient {
         )
     }
 
-    fn download(&self, url: &str, destination: &Path) -> Result<(), InstallerError> {
-        let response = self.response(url, None)?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
-        {
+    fn download(
+        &self,
+        url: &str,
+        destination: &Path,
+        name: &str,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<(), InstallerError> {
+        reporter.report(ProgressEvent::Stage {
+            action: ProgressAction::Connect,
+            target: name,
+        });
+        let mut response = self.response(url, None)?;
+        let total = response.content_length();
+        if total.is_some_and(|length| length > MAX_ARCHIVE_BYTES) {
             return Err(InstallerError::ArtifactTooLarge {
                 url: url.to_owned(),
             });
         }
+        reporter.report(ProgressEvent::DownloadStarted { name, total });
         let mut file = File::create(destination).map_err(InstallerError::Io)?;
-        let copied = io::copy(&mut response.take(MAX_ARCHIVE_BYTES + 1), &mut file)
-            .map_err(InstallerError::Io)?;
-        if copied > MAX_ARCHIVE_BYTES {
-            return Err(InstallerError::ArtifactTooLarge {
-                url: url.to_owned(),
+        let mut downloaded = 0_u64;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = response.read(&mut buffer).map_err(InstallerError::Io)?;
+            if read == 0 {
+                break;
+            }
+            downloaded = downloaded.saturating_add(read as u64);
+            if downloaded > MAX_ARCHIVE_BYTES {
+                return Err(InstallerError::ArtifactTooLarge {
+                    url: url.to_owned(),
+                });
+            }
+            file.write_all(&buffer[..read])
+                .map_err(InstallerError::Io)?;
+            reporter.report(ProgressEvent::DownloadAdvanced {
+                name,
+                downloaded,
+                total,
             });
         }
-        file.sync_all().map_err(InstallerError::Io)
+        file.sync_all().map_err(InstallerError::Io)?;
+        reporter.report(ProgressEvent::DownloadFinished {
+            name,
+            downloaded,
+            total,
+        });
+        Ok(())
     }
 }
 
@@ -384,23 +495,43 @@ pub struct Installer {
     storage: Storage,
     platform: Platform,
     http: Arc<dyn HttpClient>,
+    reporter: Arc<dyn ProgressReporter>,
 }
 
 impl Installer {
     pub fn new(storage: Storage) -> Result<Self, InstallerError> {
+        Self::new_with_reporter(storage, Arc::new(NoProgressReporter))
+    }
+
+    pub fn new_with_reporter(
+        storage: Storage,
+        reporter: Arc<dyn ProgressReporter>,
+    ) -> Result<Self, InstallerError> {
         Ok(Self {
             storage,
             platform: Platform::current()?,
             http: Arc::new(ReqwestHttpClient::new()?),
+            reporter,
         })
     }
 
     #[must_use]
     pub fn with_client(storage: Storage, platform: Platform, http: Arc<dyn HttpClient>) -> Self {
+        Self::with_client_and_reporter(storage, platform, http, Arc::new(NoProgressReporter))
+    }
+
+    #[must_use]
+    pub fn with_client_and_reporter(
+        storage: Storage,
+        platform: Platform,
+        http: Arc<dyn HttpClient>,
+        reporter: Arc<dyn ProgressReporter>,
+    ) -> Self {
         Self {
             storage,
             platform,
             http,
+            reporter,
         }
     }
 
@@ -593,7 +724,10 @@ impl Installer {
         self.storage.ensure_layout()?;
         let maintenance = self.maintenance_lock()?;
         FileExt::lock_shared(&maintenance).map_err(InstallerError::Io)?;
+        let requested = request.to_string();
+        self.report_stage(ProgressAction::Resolve, &requested);
         let release = self.resolve_package_manager(request)?;
+        let target = format!("{}@{}", release.kind, release.version);
         validate_node_engine(
             release.kind,
             &release.version,
@@ -615,12 +749,14 @@ impl Installer {
         let verified_archive = if let Some(hash) = &release.expected_hash {
             release.artifact.validate()?;
             let archive = self.obtain_archive(&release.artifact)?;
+            self.report_stage(ProgressAction::Verify, &release.artifact.file_name);
             verify_package_manager_hash(&archive, hash)?;
             Some(archive)
         } else {
             None
         };
         if executable.is_file() {
+            self.report_stage(ProgressAction::Reuse, &target);
             return Ok(ToolInstallOutcome {
                 tool: InstalledTool {
                     kind: release.kind,
@@ -657,6 +793,7 @@ impl Installer {
             .map_err(InstallerError::Io)?;
         let payload = stage.path().join("payload");
         fs::create_dir(&payload).map_err(InstallerError::Io)?;
+        self.report_stage(ProgressAction::Extract, &target);
         extract_archive(
             &archive,
             &payload,
@@ -672,6 +809,7 @@ impl Installer {
         }
         make_executable(&staged_entrypoint)?;
         write_tool_manifest(&payload, &release)?;
+        self.report_stage(ProgressAction::Publish, &target);
         fs::rename(&payload, &destination).map_err(|source| InstallerError::Publish {
             path: destination.clone(),
             source,
@@ -695,7 +833,10 @@ impl Installer {
         self.storage.ensure_layout()?;
         let maintenance = self.maintenance_lock()?;
         FileExt::lock_shared(&maintenance).map_err(InstallerError::Io)?;
+        let requested = request.to_string();
+        self.report_stage(ProgressAction::Resolve, &requested);
         let release = self.resolve(request)?;
+        let target = format!("{}@{}", release.kind, release.version);
         let destination = self
             .storage
             .runtime_version_dir(release.kind, &release.version);
@@ -704,6 +845,7 @@ impl Installer {
 
         let executable = runtime_executable_in(&destination, release.kind);
         if executable.is_file() {
+            self.report_stage(ProgressAction::Reuse, &target);
             return Ok(InstallOutcome {
                 runtime: InstalledRuntime {
                     kind: release.kind,
@@ -736,6 +878,7 @@ impl Installer {
             .map_err(InstallerError::Io)?;
         let payload = stage.path().join("payload");
         fs::create_dir(&payload).map_err(InstallerError::Io)?;
+        self.report_stage(ProgressAction::Extract, &target);
         extract_archive(
             &archive,
             &payload,
@@ -751,6 +894,7 @@ impl Installer {
         }
         make_executable(&staged_executable)?;
         write_manifest(&payload, &release)?;
+        self.report_stage(ProgressAction::Publish, &target);
         fs::rename(&payload, &destination).map_err(|source| InstallerError::Publish {
             path: destination.clone(),
             source,
@@ -933,7 +1077,11 @@ impl Installer {
             artifact.format.cache_extension()
         ));
         if path.is_file() {
+            self.report_stage(ProgressAction::Verify, &artifact.file_name);
             if artifact.integrity.verify(&path).is_ok() {
+                self.reporter.report(ProgressEvent::CacheHit {
+                    name: &artifact.file_name,
+                });
                 return Ok(path);
             }
             fs::remove_file(&path).map_err(InstallerError::Io)?;
@@ -943,7 +1091,13 @@ impl Installer {
             .prefix(".jolter-download-")
             .tempfile_in(&directory)
             .map_err(InstallerError::Io)?;
-        self.http.download(&artifact.url, temporary.path())?;
+        self.http.download(
+            &artifact.url,
+            temporary.path(),
+            &artifact.file_name,
+            self.reporter.as_ref(),
+        )?;
+        self.report_stage(ProgressAction::Verify, &artifact.file_name);
         artifact.integrity.verify(temporary.path())?;
         temporary
             .persist(&path)
@@ -1001,6 +1155,11 @@ impl Installer {
             }
             Err(error) => cached.ok_or(error),
         }
+    }
+
+    fn report_stage(&self, action: ProgressAction, target: &str) {
+        self.reporter
+            .report(ProgressEvent::Stage { action, target });
     }
 }
 
@@ -1976,6 +2135,36 @@ mod tests {
         download_count: Mutex<usize>,
     }
 
+    #[derive(Default)]
+    struct RecordingReporter {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl ProgressReporter for RecordingReporter {
+        fn report(&self, event: ProgressEvent<'_>) {
+            let value = match event {
+                ProgressEvent::Stage { action, target } => {
+                    format!("stage:{}:{target}", action.label())
+                }
+                ProgressEvent::DownloadStarted { name, total } => {
+                    format!("start:{name}:{total:?}")
+                }
+                ProgressEvent::DownloadAdvanced {
+                    name,
+                    downloaded,
+                    total,
+                } => format!("advance:{name}:{downloaded}:{total:?}"),
+                ProgressEvent::DownloadFinished {
+                    name,
+                    downloaded,
+                    total,
+                } => format!("finish:{name}:{downloaded}:{total:?}"),
+                ProgressEvent::CacheHit { name } => format!("cache:{name}"),
+            };
+            self.events.lock().unwrap().push(value);
+        }
+    }
+
     impl HttpClient for FakeHttpClient {
         fn get_text(&self, url: &str) -> Result<String, InstallerError> {
             *self.text_count.lock().unwrap() += 1;
@@ -1987,17 +2176,92 @@ mod tests {
             })
         }
 
-        fn download(&self, url: &str, destination: &Path) -> Result<(), InstallerError> {
+        fn download(
+            &self,
+            url: &str,
+            destination: &Path,
+            name: &str,
+            reporter: &dyn ProgressReporter,
+        ) -> Result<(), InstallerError> {
             let bytes = self.downloads.get(url).ok_or_else(|| {
                 InstallerError::Io(io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("no fake download for {url}"),
                 ))
             })?;
+            let total = Some(bytes.len() as u64);
+            reporter.report(ProgressEvent::DownloadStarted { name, total });
             fs::write(destination, bytes).map_err(InstallerError::Io)?;
             *self.download_count.lock().unwrap() += 1;
+            reporter.report(ProgressEvent::DownloadAdvanced {
+                name,
+                downloaded: bytes.len() as u64,
+                total,
+            });
+            reporter.report(ProgressEvent::DownloadFinished {
+                name,
+                downloaded: bytes.len() as u64,
+                total,
+            });
             Ok(())
         }
+    }
+
+    #[test]
+    fn reports_download_bytes_verification_and_cache_reuse() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+        let bytes = b"verified archive".to_vec();
+        let checksum = format!("{:x}", Sha256::digest(&bytes));
+        let url = "https://example.test/archive.zip".to_owned();
+        let client = Arc::new(FakeHttpClient {
+            text: HashMap::new(),
+            downloads: HashMap::from([(url.clone(), bytes.clone())]),
+            text_count: Mutex::new(0),
+            download_count: Mutex::new(0),
+        });
+        let reporter = Arc::new(RecordingReporter::default());
+        let installer = Installer::with_client_and_reporter(
+            storage,
+            Platform::current().unwrap(),
+            client,
+            reporter.clone(),
+        );
+        let artifact = Artifact {
+            url,
+            integrity: ArtifactIntegrity::Sha256(checksum),
+            file_name: "archive.zip".to_owned(),
+            format: ArchiveFormat::Zip,
+            strip_components: 0,
+        };
+
+        let first = installer.obtain_archive(&artifact).unwrap();
+        let second = installer.obtain_archive(&artifact).unwrap();
+
+        assert_eq!(first, second);
+        let events = reporter.events.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "start:archive.zip:Some(16)")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "advance:archive.zip:16:Some(16)")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "finish:archive.zip:16:Some(16)")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "stage:verify:archive.zip")
+        );
+        assert!(events.iter().any(|event| event == "cache:archive.zip"));
     }
 
     #[test]

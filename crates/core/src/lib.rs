@@ -1,12 +1,14 @@
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use jolter_config::{CONFIG_FILE_NAME, ProjectConfig, RuntimeConfig};
 use jolter_doctor::Report;
 use jolter_installer::{
-    CacheCleanOutcome, InstallOutcome, Installer, RemovalOutcome, ToolInstallOutcome,
+    CacheCleanOutcome, InstallOutcome, Installer, NoProgressReporter, RemovalOutcome,
+    ToolInstallOutcome,
 };
 use jolter_resolver::resolve;
 use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind, RuntimeRequest};
@@ -14,9 +16,12 @@ use jolter_storage::{CacheStats, InstalledRuntime, InstalledTool, Storage};
 use semver::Version;
 use thiserror::Error;
 
+pub use jolter_installer::{ProgressAction, ProgressEvent, ProgressReporter};
+
 pub struct Jolter {
     storage: Storage,
     installer: Installer,
+    reporter: Arc<dyn ProgressReporter>,
 }
 
 impl Jolter {
@@ -24,10 +29,25 @@ impl Jolter {
         Self::with_storage(Storage::discover()?)
     }
 
+    pub fn discover_with_reporter(reporter: Arc<dyn ProgressReporter>) -> Result<Self, CoreError> {
+        Self::with_storage_and_reporter(Storage::discover()?, reporter)
+    }
+
     pub fn with_storage(storage: Storage) -> Result<Self, CoreError> {
+        Self::with_storage_and_reporter(storage, Arc::new(NoProgressReporter))
+    }
+
+    pub fn with_storage_and_reporter(
+        storage: Storage,
+        reporter: Arc<dyn ProgressReporter>,
+    ) -> Result<Self, CoreError> {
         storage.ensure_layout()?;
-        let installer = Installer::new(storage.clone())?;
-        Ok(Self { storage, installer })
+        let installer = Installer::new_with_reporter(storage.clone(), reporter.clone())?;
+        Ok(Self {
+            storage,
+            installer,
+            reporter,
+        })
     }
 
     #[must_use]
@@ -37,6 +57,8 @@ impl Jolter {
 
     pub fn pin(&self, project: &Path, request: &RuntimeRequest) -> Result<(), CoreError> {
         let path = project.join(CONFIG_FILE_NAME);
+        let target = path.display().to_string();
+        self.report(ProgressAction::Configure, &target);
         let mut config = if path.is_file() {
             ProjectConfig::from_path(&path)?
         } else {
@@ -53,6 +75,8 @@ impl Jolter {
     }
 
     pub fn use_runtime(&self, request: &RuntimeRequest) -> Result<RuntimeAction, CoreError> {
+        let target = request.to_string();
+        self.report(ProgressAction::Select, &target);
         self.ensure_runtime(request, false)
     }
 
@@ -60,8 +84,12 @@ impl Jolter {
         &self,
         request: &PackageManagerRequest,
     ) -> Result<PackageManagerAction, CoreError> {
+        let requested = request.to_string();
+        self.report(ProgressAction::Select, &requested);
         let node_version = self.active_node_version(request)?;
         let outcome = self.ensure_package_manager(request, &node_version, false)?;
+        let target = format!("{}@{}", outcome.tool.kind, outcome.tool.version);
+        self.report(ProgressAction::Activate, &target);
         self.storage
             .activate_tool(outcome.tool.kind, &outcome.tool.version)?;
         Ok(PackageManagerAction {
@@ -80,6 +108,8 @@ impl Jolter {
     }
 
     pub fn doctor(&self, project: &Path) -> Result<Report, CoreError> {
+        let target = project.display().to_string();
+        self.report(ProgressAction::Diagnose, &target);
         Ok(jolter_doctor::examine(project, &self.storage)?)
     }
 
@@ -97,6 +127,8 @@ impl Jolter {
         version: &Version,
         force: bool,
     ) -> Result<RemovalOutcome, CoreError> {
+        let target = format!("{kind}@{version}");
+        self.report(ProgressAction::Remove, &target);
         let active = self.storage.active_version(kind)?;
         if active.as_ref() == Some(version) && !force {
             return Err(CoreError::ActiveRuntimeRemoval {
@@ -117,6 +149,8 @@ impl Jolter {
         version: &Version,
         force: bool,
     ) -> Result<RemovalOutcome, CoreError> {
+        let target = format!("{kind}@{version}");
+        self.report(ProgressAction::Remove, &target);
         let active = self.storage.active_tool_version(kind)?;
         if active.as_ref() == Some(version) && !force {
             return Err(CoreError::ActivePackageManagerRemoval {
@@ -208,6 +242,8 @@ impl Jolter {
                 item.reclaimed_bytes = self.storage.path_stats(&item.path)?.bytes;
                 continue;
             }
+            let target = format!("{}@{}", item.kind, item.version);
+            self.report(ProgressAction::Remove, &target);
             let outcome = match item.kind {
                 PruneItemKind::Runtime(kind) => {
                     self.installer.uninstall_runtime(kind, &item.version)?
@@ -227,10 +263,14 @@ impl Jolter {
     }
 
     pub fn clean_cache(&self) -> Result<CacheCleanOutcome, CoreError> {
+        let target = self.storage.cache_dir().display().to_string();
+        self.report(ProgressAction::Clean, &target);
         Ok(self.installer.clean_cache()?)
     }
 
     pub fn install_shims(&self, executable: &Path) -> Result<Vec<PathBuf>, CoreError> {
+        let target = self.storage.shims_dir().display().to_string();
+        self.report(ProgressAction::Shims, &target);
         Ok(jolter_shim::install_shims(executable, &self.storage)?)
     }
 
@@ -251,6 +291,8 @@ impl Jolter {
                     &action.runtime.version,
                     repair,
                 )?;
+                let target = format!("{}@{}", tool.tool.kind, tool.tool.version);
+                self.report(ProgressAction::Activate, &target);
                 self.storage
                     .activate_tool(tool.tool.kind, &tool.tool.version)?;
                 Ok(PackageManagerAction {
@@ -275,6 +317,9 @@ impl Jolter {
     ) -> Result<RuntimeAction, CoreError> {
         if !request.requires_release_metadata() {
             if let Some(runtime) = self.storage.find_matching(request)? {
+                let target = format!("{}@{}", runtime.kind, runtime.version);
+                self.report(ProgressAction::Reuse, &target);
+                self.report(ProgressAction::Activate, &target);
                 self.storage.activate(runtime.kind, &runtime.version)?;
                 return Ok(RuntimeAction {
                     runtime,
@@ -288,6 +333,8 @@ impl Jolter {
         } else {
             self.installer.install(request)?
         };
+        let target = format!("{}@{}", outcome.runtime.kind, outcome.runtime.version);
+        self.report(ProgressAction::Activate, &target);
         self.storage
             .activate(outcome.runtime.kind, &outcome.runtime.version)?;
         Ok(RuntimeAction::from(outcome))
@@ -301,6 +348,8 @@ impl Jolter {
     ) -> Result<ToolInstallOutcome, CoreError> {
         if !request.selector.eq_ignore_ascii_case("latest") && request.hash.is_none() {
             if let Some(tool) = self.storage.find_matching_tool(request)? {
+                let target = format!("{}@{}", tool.kind, tool.version);
+                self.report(ProgressAction::Reuse, &target);
                 self.installer
                     .validate_installed_package_manager(&tool, node_version)?;
                 return Ok(ToolInstallOutcome {
@@ -336,6 +385,11 @@ impl Jolter {
             return Err(CoreError::ActiveNodeRuntimeMissing { version, path });
         }
         Ok(version)
+    }
+
+    fn report(&self, action: ProgressAction, target: &str) {
+        self.reporter
+            .report(ProgressEvent::Stage { action, target });
     }
 }
 

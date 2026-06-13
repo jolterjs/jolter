@@ -9,6 +9,18 @@ jolter setup-ci
 The command synchronizes the exact runtime and package manager, refreshes
 shims, and reports the shims and cache directories.
 
+Jolter detects CI and automatically disables in-place progress animation.
+Stable action logs remain available on standard error. Explicit controls are:
+
+```bash
+jolter setup-ci --no-progress
+jolter setup-ci --quiet
+jolter setup-ci --json --no-color
+```
+
+Use `--quiet` when only the final result is wanted. Use `--no-progress` to keep
+line-oriented action logs without carriage-return updates.
+
 Machine-readable output is available:
 
 ```bash

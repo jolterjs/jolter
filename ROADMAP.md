@@ -187,6 +187,26 @@ Release validation:
 - execute the configured shell and WSL jobs on GitHub-hosted runners;
 - observe real user environments with multiple version managers installed.
 
+### Terminal Output
+
+Status: **Complete for stable-core commands**
+
+- Distinct `[jolter]`, `[done]`, `[warn]`, and `[fail]` output vocabulary.
+- Single-line interactive progress for runtime and package manager downloads.
+- Current resolve, connect, fetch, verify, unpack, install, activate, remove,
+  clean, configure, doctor, and shim actions.
+- Download bytes, known-length percentage, and transfer rate.
+- Stable line-oriented fallback for CI, redirected streams, and
+  `--no-progress`.
+- Global `--no-progress`, `--no-color`, `--quiet`, and `--verbose` controls.
+- Automatic progress animation suppression in recognized CI environments.
+- `NO_COLOR`, `JOLTER_NO_COLOR`, and `JOLTER_NO_PROGRESS` support.
+- Conservative Windows ANSI capability detection with automatic plain-text
+  fallback for legacy console hosts.
+- Width-aware `list` tables with aligned status and installation path columns.
+- Progress and operational logs use standard error; final results and
+  machine-readable documents remain on standard output.
+
 ### Storage
 
 Status: **Complete for current artifacts**
@@ -256,7 +276,8 @@ Implemented:
 - scheduled real-provider smoke installations
 - concurrent same-version installation regression coverage
 - bounded provider retry tests
-- measured line coverage of 84.31%
+- progress event, byte count, cache reuse, and CLI output-mode tests
+- measured line coverage of 82.14%
 - CI enforcement of the 80% line-coverage target
 - dependency vulnerability auditing
 - tagged release archives and SHA-256 files
@@ -283,7 +304,7 @@ Remaining research:
 | Security requirements | Complete for current providers | HTTPS, integrity checks, bounded extraction, and no telemetry. |
 | Telemetry | Complete by absence | No telemetry is collected. Opt-in telemetry is not implemented. |
 | Cross-platform support | Release validation | Native and WSL workflows are configured; passing hosted runs are required before 1.0. |
-| 80% coverage target | Complete | Measured line coverage is 84.31% and CI fails below 80%. |
+| 80% coverage target | Complete | Measured line coverage is 82.14% and CI fails below 80%. |
 | Extended tools manifest | Future | Deferred until after the package manager core stabilizes. |
 | CI setup command | Planned | No implementation yet. |
 | Plugin system | Future | Architecture boundaries help, but no public plugin API exists. |
@@ -367,7 +388,8 @@ Additional delivery:
 - runtime and package manager version probing with bounded execution;
 - nvm, fnm, Volta, Corepack, and system executable precedence checks;
 - remediation actions in text and JSON findings;
-- offline cache and provider failure guidance.
+- offline cache and provider failure guidance;
+- interactive progress rendering and deterministic CI logging.
 
 Exit criteria:
 
@@ -514,10 +536,9 @@ Highest priority:
 
 Medium priority:
 
-1. Better progress output for downloads and extraction.
-2. Additional machine-readable output for mutating lifecycle commands.
-3. Fuzzing for selectors, JSON, checksums, and archive paths.
-4. Optional live network diagnostics.
+1. Additional machine-readable output for mutating lifecycle commands.
+2. Fuzzing for selectors, JSON, checksums, and archive paths.
+3. Optional live network diagnostics.
 
 Later:
 
