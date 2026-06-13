@@ -10,6 +10,7 @@ inputs even when they come from an official provider.
 - metadata responses are bounded to 16 MiB
 - artifact responses and extracted archives are bounded to 4 GiB
 - requests use finite connection and total timeouts
+- transient failures use at most three attempts with bounded backoff
 
 ## Integrity
 
@@ -36,3 +37,11 @@ the completed directory is renamed into place. A per-version file lock
 serializes concurrent installers.
 
 Jolter does not run a downloaded executable as part of installation.
+
+Metadata cache writes use per-key locks. Cache cleanup uses an exclusive
+maintenance lock, while install, repair, uninstall, and prune participate in
+the same locking protocol.
+
+`jolter doctor` may execute an already-installed runtime or package manager
+with `--version`. That probe is bounded to five seconds and captures at most
+16 KiB from each output stream.

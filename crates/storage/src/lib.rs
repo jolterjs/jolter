@@ -250,20 +250,7 @@ impl Storage {
 
     pub fn activate(&self, kind: RuntimeKind, version: &Version) -> Result<(), StorageError> {
         let path = self.config_dir().join("active.json");
-        let mut active = if path.is_file() {
-            let contents = fs::read_to_string(&path).map_err(|source| StorageError::ReadFile {
-                path: path.clone(),
-                source,
-            })?;
-            serde_json::from_str::<ActiveRuntimes>(&contents).map_err(|source| {
-                StorageError::ParseActive {
-                    path: path.clone(),
-                    source,
-                }
-            })?
-        } else {
-            ActiveRuntimes::default()
-        };
+        let mut active = self.read_active_runtimes()?;
         active
             .versions
             .insert(kind.to_string(), version.to_string());
@@ -272,19 +259,7 @@ impl Storage {
     }
 
     pub fn active_version(&self, kind: RuntimeKind) -> Result<Option<Version>, StorageError> {
-        let path = self.config_dir().join("active.json");
-        if !path.is_file() {
-            return Ok(None);
-        }
-        let contents = fs::read_to_string(&path).map_err(|source| StorageError::ReadFile {
-            path: path.clone(),
-            source,
-        })?;
-        let active: ActiveRuntimes =
-            serde_json::from_str(&contents).map_err(|source| StorageError::ParseActive {
-                path: path.clone(),
-                source,
-            })?;
+        let active = self.read_active_runtimes()?;
         active
             .versions
             .get(&kind.to_string())
@@ -296,6 +271,56 @@ impl Storage {
                 })
             })
             .transpose()
+    }
+
+    pub fn deactivate(
+        &self,
+        kind: RuntimeKind,
+        expected: Option<&Version>,
+    ) -> Result<bool, StorageError> {
+        let path = self.config_dir().join("active.json");
+        if !path.is_file() {
+            return Ok(false);
+        }
+        let mut active = self.read_active_runtimes()?;
+        let key = kind.to_string();
+        let should_remove = active
+            .versions
+            .get(&key)
+            .is_some_and(|value| expected.is_none_or(|version| value == &version.to_string()));
+        if !should_remove {
+            return Ok(false);
+        }
+        active.versions.remove(&key);
+        let contents = serde_json::to_vec_pretty(&active).map_err(StorageError::SerializeActive)?;
+        atomic_write(&path, &contents)?;
+        Ok(true)
+    }
+
+    pub fn cache_stats(&self) -> Result<CacheStats, StorageError> {
+        let mut total = CacheStats::default();
+        for name in ["downloads", "metadata"] {
+            let stats = directory_stats(&self.cache_dir().join(name))?;
+            total.files = total.files.saturating_add(stats.files);
+            total.bytes = total.bytes.saturating_add(stats.bytes);
+        }
+        Ok(total)
+    }
+
+    pub fn path_stats(&self, path: &Path) -> Result<CacheStats, StorageError> {
+        directory_stats(path)
+    }
+
+    fn read_active_runtimes(&self) -> Result<ActiveRuntimes, StorageError> {
+        let path = self.config_dir().join("active.json");
+        if !path.is_file() {
+            return Ok(ActiveRuntimes::default());
+        }
+        let contents = fs::read_to_string(&path).map_err(|source| StorageError::ReadFile {
+            path: path.clone(),
+            source,
+        })?;
+        serde_json::from_str(&contents).map_err(|source| StorageError::ParseActive { path, source })
     }
 }
 
@@ -323,6 +348,12 @@ pub struct InstalledTool {
     pub kind: PackageManagerKind,
     pub version: Version,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    pub files: u64,
+    pub bytes: u64,
 }
 
 impl InstalledTool {
@@ -408,6 +439,38 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), StorageError> {
             source: error.error,
         })?;
     Ok(())
+}
+
+fn directory_stats(path: &Path) -> Result<CacheStats, StorageError> {
+    if !path.exists() {
+        return Ok(CacheStats::default());
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|source| StorageError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        return Ok(CacheStats {
+            files: 1,
+            bytes: metadata.len(),
+        });
+    }
+
+    let mut stats = CacheStats::default();
+    let entries = fs::read_dir(path).map_err(|source| StorageError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| StorageError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let child = directory_stats(&entry.path())?;
+        stats.files = stats.files.saturating_add(child.files);
+        stats.bytes = stats.bytes.saturating_add(child.bytes);
+    }
+    Ok(stats)
 }
 
 fn home_directory() -> Option<PathBuf> {
@@ -545,5 +608,124 @@ mod tests {
             .unwrap();
 
         assert_eq!(found.version, Version::new(10, 2, 0));
+    }
+
+    #[test]
+    fn deactivates_only_the_expected_runtime_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+        let active = Version::new(24, 2, 0);
+        storage.activate(RuntimeKind::Node, &active).unwrap();
+
+        assert!(
+            !storage
+                .deactivate(RuntimeKind::Node, Some(&Version::new(22, 0, 0)))
+                .unwrap()
+        );
+        assert_eq!(
+            storage.active_version(RuntimeKind::Node).unwrap(),
+            Some(active.clone())
+        );
+        assert!(
+            storage
+                .deactivate(RuntimeKind::Node, Some(&active))
+                .unwrap()
+        );
+        assert_eq!(storage.active_version(RuntimeKind::Node).unwrap(), None);
+    }
+
+    #[test]
+    fn reports_recursive_cache_size() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+        let cache_file = storage.cache_dir().join("downloads").join("archive");
+        fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
+        fs::write(cache_file, b"12345").unwrap();
+
+        assert_eq!(
+            storage.cache_stats().unwrap(),
+            CacheStats { files: 1, bytes: 5 }
+        );
+    }
+
+    #[test]
+    fn finds_highest_matching_complete_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+        for version in [Version::new(24, 1, 0), Version::new(24, 2, 0)] {
+            let executable = storage.runtime_executable(RuntimeKind::Node, &version);
+            fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            fs::write(executable, b"node").unwrap();
+        }
+        fs::create_dir_all(storage.runtime_dir(RuntimeKind::Node).join("24.3.0")).unwrap();
+
+        let found = storage
+            .find_matching(&"node@24".parse().unwrap())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(found.version, Version::new(24, 2, 0));
+        assert!(found.is_complete());
+    }
+
+    #[test]
+    fn lists_semver_tool_directories_and_completion_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+        let complete = Version::new(10, 2, 0);
+        let entrypoint = storage
+            .tool_entrypoint(PackageManagerKind::Pnpm, &complete, "pnpm")
+            .unwrap();
+        fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        fs::write(entrypoint, b"pnpm").unwrap();
+        fs::create_dir_all(storage.tool_dir(PackageManagerKind::Yarn).join("4.1.0")).unwrap();
+        fs::create_dir_all(storage.tool_dir(PackageManagerKind::Npm).join("partial")).unwrap();
+
+        let installed = storage.installed_tools().unwrap();
+
+        assert_eq!(installed.len(), 2);
+        assert!(installed.iter().any(InstalledTool::is_complete));
+        assert!(installed.iter().any(|tool| !tool.is_complete()));
+    }
+
+    #[test]
+    fn reports_invalid_active_versions_and_can_clear_any_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+        let active_path = storage.config_dir().join("active.json");
+        fs::write(&active_path, r#"{"node":"not-semver"}"#).unwrap();
+        assert!(matches!(
+            storage.active_version(RuntimeKind::Node),
+            Err(StorageError::InvalidActiveVersion { .. })
+        ));
+
+        fs::remove_file(active_path).unwrap();
+        storage
+            .activate(RuntimeKind::Node, &Version::new(24, 1, 0))
+            .unwrap();
+        assert!(storage.deactivate(RuntimeKind::Node, None).unwrap());
+        assert_eq!(storage.active_version(RuntimeKind::Node).unwrap(), None);
+    }
+
+    #[test]
+    fn path_stats_handles_files_and_missing_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        let file = temp.path().join("single");
+        fs::write(&file, b"abc").unwrap();
+
+        assert_eq!(
+            storage.path_stats(&file).unwrap(),
+            CacheStats { files: 1, bytes: 3 }
+        );
+        assert_eq!(
+            storage.path_stats(&temp.path().join("missing")).unwrap(),
+            CacheStats::default()
+        );
     }
 }

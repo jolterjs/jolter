@@ -8,14 +8,27 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const CONFIG_FILE_NAME: &str = "jolter.json";
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectConfig {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     #[serde(default, skip_serializing_if = "RuntimeConfig::is_empty")]
     pub runtime: RuntimeConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub package_manager: BTreeMap<String, String>,
+}
+
+impl Default for ProjectConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            runtime: RuntimeConfig::default(),
+            package_manager: BTreeMap::new(),
+        }
+    }
 }
 
 impl ProjectConfig {
@@ -65,6 +78,12 @@ impl ProjectConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.schema_version != CURRENT_SCHEMA_VERSION {
+            return Err(ConfigError::UnsupportedSchemaVersion {
+                found: self.schema_version,
+                supported: CURRENT_SCHEMA_VERSION,
+            });
+        }
         let configured_runtimes = self.runtime.configured_count();
         if configured_runtimes > 1 {
             return Err(ConfigError::MultipleRuntimes);
@@ -81,11 +100,18 @@ impl ProjectConfig {
                 return Err(ConfigError::EmptySelector(name.to_owned()));
             }
         }
+        if let Some((name, selector)) = self.runtime.entries().next() {
+            jolter_runtime::RuntimeRequest::new(name.parse()?, selector)?;
+        }
         if let Some((name, selector)) = self.package_manager.iter().next() {
             jolter_runtime::PackageManagerRequest::new(name.parse()?, selector)?;
         }
         Ok(())
     }
+}
+
+const fn default_schema_version() -> u32 {
+    CURRENT_SCHEMA_VERSION
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,12 +182,18 @@ pub enum ConfigError {
     },
     #[error("only one runtime may be configured per project")]
     MultipleRuntimes,
+    #[error(
+        "unsupported jolter.json schema version {found}; this Jolter release supports version {supported}"
+    )]
+    UnsupportedSchemaVersion { found: u32, supported: u32 },
     #[error("only one package manager may be configured per project")]
     MultiplePackageManagers,
     #[error("selector for `{0}` cannot be empty")]
     EmptySelector(String),
     #[error(transparent)]
     PackageManager(#[from] jolter_runtime::PackageManagerRequestError),
+    #[error(transparent)]
+    Runtime(#[from] jolter_runtime::RuntimeRequestError),
     #[error("invalid configuration path {path}")]
     InvalidPath { path: PathBuf },
 }
@@ -202,6 +234,7 @@ mod tests {
     #[test]
     fn rejects_multiple_runtimes() {
         let config = ProjectConfig {
+            schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig {
                 node: Some("24".to_owned()),
                 bun: Some("1".to_owned()),
@@ -222,6 +255,7 @@ mod tests {
         package_manager.insert("pnpm".to_owned(), "10".to_owned());
         package_manager.insert("yarn".to_owned(), "4".to_owned());
         let config = ProjectConfig {
+            schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
             package_manager,
         };
@@ -231,12 +265,47 @@ mod tests {
         ));
 
         let config = ProjectConfig {
+            schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
             package_manager: BTreeMap::from([("rush".to_owned(), "5".to_owned())]),
         };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::PackageManager(_))
+        ));
+    }
+
+    #[test]
+    fn defaults_legacy_configuration_to_schema_version_one() {
+        let config: ProjectConfig = serde_json::from_str(r#"{"runtime":{"node":"24"}}"#).unwrap();
+
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_unknown_schema_versions() {
+        let config: ProjectConfig =
+            serde_json::from_str(r#"{"schemaVersion":2,"runtime":{"node":"24"}}"#).unwrap();
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::UnsupportedSchemaVersion {
+                found: 2,
+                supported: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_runtime_selectors_during_config_parsing() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(CONFIG_FILE_NAME);
+        fs::write(&path, r#"{"runtime":{"node":"not-semver"}}"#).unwrap();
+
+        assert!(matches!(
+            ProjectConfig::from_path(&path),
+            Err(ConfigError::Runtime(_))
         ));
     }
 }

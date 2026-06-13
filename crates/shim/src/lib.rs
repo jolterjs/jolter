@@ -293,4 +293,78 @@ mod tests {
         assert_eq!(resolved.executable, node);
         assert_eq!(resolved.arguments, vec![pnpm]);
     }
+
+    #[test]
+    fn resolves_active_runtime_and_bundled_node_tools() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+        let version = Version::new(22, 4, 0);
+        let node = storage.runtime_executable(RuntimeKind::Node, &version);
+        let npm = storage.node_tool_executable(&version, "npm");
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(&node, b"node").unwrap();
+        fs::write(&npm, b"npm").unwrap();
+        storage.activate(RuntimeKind::Node, &version).unwrap();
+
+        let resolved = resolve_command("npm", project.path(), &storage).unwrap();
+
+        assert_eq!(resolved.executable, npm);
+        assert!(resolved.arguments.is_empty());
+        assert_eq!(resolved.runtime.version, version);
+    }
+
+    #[test]
+    fn reports_missing_active_runtime_and_project_tool() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+
+        assert!(matches!(
+            resolve_command("node", project.path(), &storage),
+            Err(ShimError::NoActiveRuntime(RuntimeKind::Node))
+        ));
+
+        fs::write(
+            project.path().join("jolter.json"),
+            r#"{"runtime":{"node":"24"},"packageManager":{"pnpm":"10"}}"#,
+        )
+        .unwrap();
+        let version = Version::new(24, 1, 0);
+        let node = storage.runtime_executable(RuntimeKind::Node, &version);
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(node, b"node").unwrap();
+        assert!(matches!(
+            resolve_command("pnpm", project.path(), &storage),
+            Err(ShimError::ToolNotInstalled(_))
+        ));
+    }
+
+    #[test]
+    fn installs_and_refreshes_every_shim() {
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join(if cfg!(windows) {
+            "jolter.exe"
+        } else {
+            "jolter"
+        });
+        fs::write(&source, b"first").unwrap();
+
+        let installed = install_shims(&source, &storage).unwrap();
+        assert_eq!(installed.len(), SHIM_COMMANDS.len());
+        assert!(installed.iter().all(|path| path.is_file()));
+
+        fs::remove_file(&source).unwrap();
+        fs::write(&source, b"second").unwrap();
+        install_shims(&source, &storage).unwrap();
+        assert_eq!(fs::read(&installed[0]).unwrap(), b"second");
+        assert!(matches!(
+            install_shims(&source_dir.path().join("missing"), &storage),
+            Err(ShimError::SourceExecutableMissing(_))
+        ));
+    }
 }

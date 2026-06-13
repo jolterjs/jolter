@@ -3,10 +3,9 @@
 Jolter is a Rust-based JavaScript toolchain manager for Node.js, Bun, Deno,
 and package managers.
 
-The project is under active development. Runtime and package-manager
-installation, synchronization, repair, and project-aware switching are
-functional. Cross-platform release hardening and onboarding are the next major
-steps before a stable release.
+Version `0.2.0` implements the stable-core command surface. The project remains
+pre-1.0 until its configured cross-platform and provider-smoke workflows have
+passed through a release-candidate period.
 
 ## Working Features
 
@@ -27,7 +26,13 @@ steps before a stable release.
 - install shims and print exact shell-specific `PATH` setup commands
 - list runtimes and managed package managers with installation health
 - diagnose configuration, runtimes, package managers, shims, and `PATH`
+- probe installed versions with a bounded timeout and validate manifests
+- detect shadowing by system tools, nvm, fnm, Volta, and Corepack paths
 - emit machine-readable diagnostics with `jolter doctor --json`
+- uninstall exact versions, prune old versions, and clean caches safely
+- prepare project toolchains for CI with `jolter setup-ci`
+- generate Bash, Zsh, Fish, Elvish, and PowerShell completions
+- enforce at least 80% line coverage in CI
 
 ## Build
 
@@ -71,7 +76,26 @@ Inspect installed toolchains or consume diagnostics as JSON:
 
 ```bash
 jolter list
+jolter list --json
 jolter doctor --json
+```
+
+Manage storage lifecycle:
+
+```bash
+jolter uninstall node@24.1.0
+jolter prune --dry-run
+jolter prune --keep 2
+jolter cache status
+jolter cache clean
+```
+
+Prepare CI and generate shell completions:
+
+```bash
+jolter setup-ci --json
+jolter completions bash
+jolter completions powershell
 ```
 
 `setup`, `use`, `sync`, and `repair` generate shims for `node`, `npm`, `npx`,
@@ -91,6 +115,7 @@ See [shell setup](docs/setup.md) for supported shells and persistence behavior.
 
 ```json
 {
+  "schemaVersion": 1,
   "runtime": {
     "node": "24.x"
   },
@@ -118,3 +143,11 @@ See [shell setup](docs/setup.md), [diagnostics](docs/diagnostics.md),
 [security model](docs/security.md) for implementation details. The
 [project roadmap](ROADMAP.md) records feature status, known gaps, and release
 milestones.
+
+Additional guides:
+
+- [installation](docs/installation.md)
+- [CI integration](docs/ci.md)
+- [storage lifecycle](docs/lifecycle.md)
+- [compatibility policy](docs/compatibility.md)
+- [troubleshooting](docs/troubleshooting.md)

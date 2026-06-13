@@ -13,7 +13,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/jolterjs/jolter"
@@ -22,6 +22,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
 flate2 = "1.1"
 fs4 = "1.1"
 nodejs-semver = "4.2"

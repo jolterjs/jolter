@@ -60,3 +60,19 @@ $JOLTER_HOME/shims
 ```
 
 The generated instructions always use the resolved absolute shims path.
+
+## Completions
+
+Generate completions without modifying shell profiles:
+
+```bash
+jolter completions bash
+jolter completions zsh
+jolter completions fish
+jolter completions elvish
+jolter completions powershell
+```
+
+Redirect the output into the completion location used by the selected shell.
+Command Prompt does not provide a comparable native programmable-completion
+interface.

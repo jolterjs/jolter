@@ -1,15 +1,22 @@
 use std::{
     env,
+    fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode},
 };
 
-use clap::{Parser, Subcommand, ValueEnum};
-use jolter_core::{Jolter, SyncOutcome};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{
+    generate,
+    shells::{Bash, Elvish, Fish, PowerShell, Zsh},
+};
+use jolter_core::{Jolter, PruneOutcome, SyncOutcome};
 use jolter_doctor::CheckStatus;
-use jolter_runtime::{RuntimeKind, RuntimeRequest};
+use jolter_runtime::{PackageManagerKind, RuntimeKind, RuntimeRequest};
 use jolter_shim::{resolve_command, target_for_command};
 use jolter_storage::Storage;
+use semver::Version;
 use thiserror::Error;
 
 #[derive(Debug, Parser)]
@@ -38,7 +45,11 @@ enum Command {
         runtime: RuntimeRequest,
     },
     /// List locally installed runtimes and package managers.
-    List,
+    List {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Check project toolchain health.
     Doctor {
         /// Emit machine-readable JSON.
@@ -49,6 +60,64 @@ enum Command {
     Repair,
     /// Synchronize the local toolchain with project requirements.
     Sync,
+    /// Remove one exact runtime or package manager version.
+    Uninstall {
+        /// Exact version to remove, for example node@24.1.0 or pnpm@10.2.0.
+        #[arg(value_parser = parse_uninstall_target)]
+        target: UninstallTarget,
+        /// Permit removal when the runtime is globally active.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove old and incomplete installations.
+    Prune {
+        /// Number of newest complete versions to keep for each tool.
+        #[arg(long, default_value_t = 1)]
+        keep: usize,
+        /// Print what would be removed without changing storage.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Inspect or clean Jolter's download and metadata cache.
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
+    /// Synchronize the project and expose its exact toolchain to CI.
+    SetupCi {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate shell completion scripts.
+    Completions {
+        /// Shell whose completion script should be generated.
+        #[arg(value_enum)]
+        shell: CompletionShell,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Subcommand)]
+enum CacheCommand {
+    /// Report the number and size of cached files.
+    Status,
+    /// Remove cached downloads and release metadata.
+    Clean,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Elvish,
+    Fish,
+    Powershell,
+    Zsh,
+}
+
+#[derive(Debug, Clone)]
+enum UninstallTarget {
+    Runtime(RuntimeKind, Version),
+    PackageManager(PackageManagerKind, Version),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -115,8 +184,12 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        Command::List => {
-            print_inventory(&jolter)?;
+        Command::List { json } => {
+            if json {
+                print_inventory_json(&jolter)?;
+            } else {
+                print_inventory(&jolter)?;
+            }
             Ok(ExitCode::SUCCESS)
         }
         Command::Doctor { json } => run_doctor(&jolter, &current_dir, json),
@@ -132,7 +205,87 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             print_sync_outcome("Repaired", &outcome);
             Ok(ExitCode::SUCCESS)
         }
+        Command::Uninstall { target, force } => run_uninstall(&jolter, target, force),
+        Command::Prune { keep, dry_run } => run_prune(&jolter, &current_dir, keep, dry_run),
+        Command::Cache { command } => run_cache(&jolter, command),
+        Command::SetupCi { json } => run_setup_ci(&jolter, &current_dir, json),
+        Command::Completions { shell } => {
+            print_completions(shell);
+            Ok(ExitCode::SUCCESS)
+        }
     }
+}
+
+fn run_uninstall(
+    jolter: &Jolter,
+    target: UninstallTarget,
+    force: bool,
+) -> Result<ExitCode, CliError> {
+    let (name, version, outcome) = match target {
+        UninstallTarget::Runtime(kind, version) => {
+            let outcome = jolter.uninstall_runtime(kind, &version, force)?;
+            (kind.to_string(), version, outcome)
+        }
+        UninstallTarget::PackageManager(kind, version) => {
+            let outcome = jolter.uninstall_package_manager(kind, &version)?;
+            (kind.to_string(), version, outcome)
+        }
+    };
+    println!(
+        "Uninstalled {name}@{version} from {} ({})",
+        outcome.path.display(),
+        human_bytes(outcome.reclaimed_bytes)
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_prune(
+    jolter: &Jolter,
+    project: &Path,
+    keep: usize,
+    dry_run: bool,
+) -> Result<ExitCode, CliError> {
+    let outcome = jolter.prune(project, keep, dry_run)?;
+    print_prune_outcome(&outcome);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_cache(jolter: &Jolter, command: CacheCommand) -> Result<ExitCode, CliError> {
+    match command {
+        CacheCommand::Status => {
+            let stats = jolter.cache_stats()?;
+            println!(
+                "Cache: {} file(s), {} at {}",
+                stats.files,
+                human_bytes(stats.bytes),
+                jolter.storage().cache_dir().display()
+            );
+        }
+        CacheCommand::Clean => {
+            let outcome = jolter.clean_cache()?;
+            println!(
+                "Removed {} cached file(s), reclaiming {}",
+                outcome.removed_files,
+                human_bytes(outcome.reclaimed_bytes)
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_setup_ci(jolter: &Jolter, project: &Path, json: bool) -> Result<ExitCode, CliError> {
+    let outcome = jolter.sync(project)?;
+    install_shims(jolter)?;
+    let provider = configure_ci_environment(jolter, &outcome)?;
+    if json {
+        print_ci_json(jolter, &outcome, provider)?;
+    } else {
+        println!("CI provider: {provider}");
+        print_sync_outcome("Synchronized", &outcome);
+        println!("Shims: {}", jolter.storage().shims_dir().display());
+        println!("Cache: {}", jolter.storage().cache_dir().display());
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn print_inventory(jolter: &Jolter) -> Result<(), CliError> {
@@ -175,6 +328,44 @@ fn print_inventory(jolter: &Jolter) -> Result<(), CliError> {
     Ok(())
 }
 
+fn print_inventory_json(jolter: &Jolter) -> Result<(), CliError> {
+    let runtimes = jolter
+        .list()?
+        .into_iter()
+        .map(|runtime| {
+            let active = jolter.storage().active_version(runtime.kind)?;
+            Ok(serde_json::json!({
+                "kind": runtime.kind.to_string(),
+                "version": runtime.version.to_string(),
+                "path": runtime.path,
+                "ready": runtime.is_complete(),
+                "active": active.as_ref() == Some(&runtime.version),
+            }))
+        })
+        .collect::<Result<Vec<_>, jolter_storage::StorageError>>()?;
+    let package_managers = jolter
+        .list_tools()?
+        .into_iter()
+        .map(|tool| {
+            serde_json::json!({
+                "kind": tool.kind.to_string(),
+                "version": tool.version.to_string(),
+                "path": tool.path,
+                "ready": tool.is_complete(),
+            })
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "runtimes": runtimes,
+            "packageManagers": package_managers,
+        }))
+        .map_err(CliError::Json)?
+    );
+    Ok(())
+}
+
 fn run_doctor(jolter: &Jolter, project: &Path, json: bool) -> Result<ExitCode, CliError> {
     let report = jolter.doctor(project)?;
     if json {
@@ -194,6 +385,9 @@ fn run_doctor(jolter: &Jolter, project: &Path, json: bool) -> Result<ExitCode, C
                 CheckStatus::Fail => "fail",
             };
             println!("[{symbol}] {}: {}", check.name, check.message);
+            if let Some(remediation) = &check.remediation {
+                println!("  action: {remediation}");
+            }
         }
     }
     Ok(if report.is_healthy() {
@@ -349,6 +543,193 @@ fn print_sync_outcome(prefix: &str, outcome: &SyncOutcome) {
     }
 }
 
+fn print_prune_outcome(outcome: &PruneOutcome) {
+    if outcome.removed.is_empty() {
+        println!("Nothing to prune.");
+        return;
+    }
+    let verb = if outcome.dry_run {
+        "Would remove"
+    } else {
+        "Removed"
+    };
+    for item in &outcome.removed {
+        println!(
+            "{verb} {}@{} from {} ({})",
+            item.kind,
+            item.version,
+            item.path.display(),
+            human_bytes(item.reclaimed_bytes)
+        );
+    }
+    println!(
+        "{} {} installation(s), reclaiming {}{}",
+        if outcome.dry_run { "Planned" } else { "Pruned" },
+        outcome.removed.len(),
+        human_bytes(outcome.reclaimed_bytes()),
+        if outcome.dry_run { " if applied" } else { "" }
+    );
+}
+
+fn configure_ci_environment(
+    jolter: &Jolter,
+    outcome: &SyncOutcome,
+) -> Result<&'static str, CliError> {
+    let provider = detect_ci_provider();
+    if provider == "github-actions" {
+        append_ci_line(
+            "GITHUB_PATH",
+            &jolter.storage().shims_dir().to_string_lossy(),
+        )?;
+        append_ci_line(
+            "GITHUB_OUTPUT",
+            &format!(
+                "runtime={}@{}",
+                outcome.runtime.kind, outcome.runtime.version
+            ),
+        )?;
+        if let Some(package_manager) = &outcome.package_manager {
+            append_ci_line(
+                "GITHUB_OUTPUT",
+                &format!(
+                    "package_manager={}@{}",
+                    package_manager.tool.kind, package_manager.tool.version
+                ),
+            )?;
+        }
+        append_ci_line(
+            "GITHUB_OUTPUT",
+            &format!("cache={}", jolter.storage().cache_dir().display()),
+        )?;
+    }
+    Ok(provider)
+}
+
+fn append_ci_line(variable: &'static str, value: &str) -> Result<(), CliError> {
+    let Some(path) = env::var_os(variable) else {
+        return Ok(());
+    };
+    let path = PathBuf::from(path);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|source| CliError::CiEnvironment {
+            variable,
+            path: path.clone(),
+            source,
+        })?;
+    writeln!(file, "{value}").map_err(|source| CliError::CiEnvironment {
+        variable,
+        path,
+        source,
+    })
+}
+
+fn detect_ci_provider() -> &'static str {
+    if env_flag("GITHUB_ACTIONS") {
+        "github-actions"
+    } else if env_flag("GITLAB_CI") {
+        "gitlab-ci"
+    } else if env_flag("CIRCLECI") {
+        "circleci"
+    } else if env_flag("TF_BUILD") {
+        "azure-pipelines"
+    } else if env_flag("BUILDKITE") {
+        "buildkite"
+    } else {
+        "generic"
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    env::var_os(name).is_some_and(|value| {
+        matches!(
+            value.to_string_lossy().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
+    })
+}
+
+fn print_ci_json(jolter: &Jolter, outcome: &SyncOutcome, provider: &str) -> Result<(), CliError> {
+    let package_manager = outcome.package_manager.as_ref().map(|action| {
+        serde_json::json!({
+            "kind": action.tool.kind.to_string(),
+            "version": action.tool.version.to_string(),
+            "path": action.tool.path,
+        })
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "provider": provider,
+            "runtime": {
+                "kind": outcome.runtime.kind.to_string(),
+                "version": outcome.runtime.version.to_string(),
+                "path": outcome.runtime.path,
+            },
+            "packageManager": package_manager,
+            "shims": jolter.storage().shims_dir(),
+            "cache": jolter.storage().cache_dir(),
+        }))
+        .map_err(CliError::Json)?
+    );
+    Ok(())
+}
+
+fn print_completions(shell: CompletionShell) {
+    let mut command = Cli::command();
+    let name = command.get_name().to_owned();
+    match shell {
+        CompletionShell::Bash => generate(Bash, &mut command, name, &mut std::io::stdout()),
+        CompletionShell::Elvish => generate(Elvish, &mut command, name, &mut std::io::stdout()),
+        CompletionShell::Fish => generate(Fish, &mut command, name, &mut std::io::stdout()),
+        CompletionShell::Powershell => {
+            generate(PowerShell, &mut command, name, &mut std::io::stdout());
+        }
+        CompletionShell::Zsh => generate(Zsh, &mut command, name, &mut std::io::stdout()),
+    }
+}
+
+fn parse_uninstall_target(value: &str) -> Result<UninstallTarget, String> {
+    let (name, selector) = value
+        .rsplit_once('@')
+        .ok_or_else(|| "expected <runtime-or-manager>@<exact-version>".to_owned())?;
+    let version = Version::parse(selector.trim_start_matches('v'))
+        .map_err(|_| "uninstall requires an exact semantic version".to_owned())?;
+    let normalized = name.to_ascii_lowercase();
+    match normalized.as_str() {
+        "node" | "nodejs" | "bun" | "deno" => name
+            .parse()
+            .map(|kind| UninstallTarget::Runtime(kind, version))
+            .map_err(|error: jolter_runtime::RuntimeRequestError| error.to_string()),
+        "npm" | "pnpm" | "yarn" | "yarnpkg" => name
+            .parse()
+            .map(|kind| UninstallTarget::PackageManager(kind, version))
+            .map_err(|error: jolter_runtime::PackageManagerRequestError| error.to_string()),
+        _ => Err(format!(
+            "unsupported tool `{name}`; expected node, bun, deno, npm, pnpm, or yarn"
+        )),
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut divisor = 1_u64;
+    let mut unit = 0;
+    while bytes / divisor >= 1024 && unit < UNITS.len() - 1 {
+        divisor = divisor.saturating_mul(1024);
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        let whole = bytes / divisor;
+        let decimal = (bytes % divisor).saturating_mul(10) / divisor;
+        format!("{whole}.{decimal} {}", UNITS[unit])
+    }
+}
+
 fn install_shims(jolter: &Jolter) -> Result<(), CliError> {
     let executable = env::current_exe().map_err(CliError::CurrentExecutable)?;
     jolter.install_shims(&executable)?;
@@ -441,4 +822,11 @@ enum CliError {
     JoinPath(#[source] env::JoinPathsError),
     #[error("failed to serialize command output: {0}")]
     Json(#[source] serde_json::Error),
+    #[error("failed to update {variable} file {path}: {source}")]
+    CiEnvironment {
+        variable: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }

@@ -1,0 +1,58 @@
+name: Provider Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: Providers (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15-intel
+          - macos-15
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - run: cargo build --release --locked
+      - name: Install and execute real toolchains
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = if ($IsWindows) {
+            Join-Path $PWD "target/release/jolter.exe"
+          } else {
+            Join-Path $PWD "target/release/jolter"
+          }
+          $env:JOLTER_HOME = Join-Path $env:RUNNER_TEMP "jolter-home"
+
+          & $exe use node@lts
+          & $exe use bun@latest
+          & $exe use deno@latest
+
+          $project = Join-Path $env:RUNNER_TEMP "jolter-smoke-project"
+          New-Item -ItemType Directory -Force $project | Out-Null
+          @'
+          {
+            "schemaVersion": 1,
+            "runtime": { "node": "lts" },
+            "packageManager": { "pnpm": "latest" }
+          }
+          '@ | Set-Content -NoNewline (Join-Path $project "jolter.json")
+          Push-Location $project
+          try {
+            & $exe setup-ci --json
+            $shim = Join-Path $env:JOLTER_HOME "shims"
+            & (Join-Path $shim $(if ($IsWindows) { "node.exe" } else { "node" })) --version
+            & (Join-Path $shim $(if ($IsWindows) { "pnpm.exe" } else { "pnpm" })) --version
+          } finally {
+            Pop-Location
+          }

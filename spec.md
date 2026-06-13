@@ -133,6 +133,7 @@ Example:
 
 ```json
 {
+  "schemaVersion": 1,
   "runtime": {
     "node": "24.x"
   },
@@ -218,6 +219,41 @@ jolter sync
 ```
 
 Ensures local environment matches project requirements.
+
+---
+
+## Uninstall
+
+```bash
+jolter uninstall node@24.1.0
+```
+
+Removes an exact runtime or managed package manager version. Active runtimes
+require explicit `--force`.
+
+---
+
+## Prune And Cache
+
+```bash
+jolter prune --dry-run
+jolter cache status
+jolter cache clean
+```
+
+Prune preserves active versions, current project requirements, and a
+configurable number of newest complete versions.
+
+---
+
+## CI Setup
+
+```bash
+jolter setup-ci --json
+```
+
+Synchronizes exact project toolchains and reports resolved versions, shims,
+and cache paths for automation.
 
 ---
 
@@ -309,7 +345,8 @@ Default:
 disabled
 ```
 
-Users may explicitly enable anonymous telemetry.
+No telemetry collection is implemented. Any future telemetry must be
+explicitly opt-in and independently documented.
 
 ---
 

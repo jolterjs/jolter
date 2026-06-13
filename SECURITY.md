@@ -14,6 +14,8 @@ vulnerability.
 - archives are verified against official SHA-256 metadata before extraction
 - archive paths, links, entry counts, and extracted sizes are constrained
 - installations are staged and then published atomically
+- concurrent metadata and installation publication is locked
+- cache cleanup is coordinated with active installation operations
 - Jolter does not execute downloaded runtimes during installation
 - telemetry is not implemented and no usage data is collected
 

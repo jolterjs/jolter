@@ -3,7 +3,7 @@
 Jolter is a Rust workspace split by responsibility:
 
 - `cli`: command parsing, shell onboarding, output, and self-shim dispatch
-- `core`: orchestration for use, pin, sync, repair, and diagnostics
+- `core`: orchestration for use, pin, sync, repair, removal, pruning, and diagnostics
 - `config`: strict `jolter.json` parsing and atomic writes
 - `runtime`: runtime names and version-selector semantics
 - `installer`: release providers, HTTPS downloads, checksums, and extraction
@@ -43,6 +43,11 @@ Jolter is a Rust workspace split by responsibility:
 Locally reusable package-manager installations are checked against the
 selected Node.js version using their installed `package.json` metadata.
 
+Transient provider failures are retried at most three times with bounded
+backoff. HTTP 408, 429, 500, 502, 503, and 504 responses are retryable.
+Metadata cache publication is serialized by cache-key locks, while
+installation publication is serialized by exact-version locks.
+
 ## Switching
 
 Each generated shim is the Jolter executable under a tool-specific file name.
@@ -61,6 +66,17 @@ when their expected executable or entry point exists.
 `jolter doctor --json` serializes the same checks and health result used by the
 human-readable command. This keeps automation and interactive diagnostics on
 one behavior path.
+
+## Storage Lifecycle
+
+Exact-version uninstall and prune operations acquire the same installation
+locks as install and repair. Active runtimes are protected unless uninstall is
+explicitly forced. Prune protects active versions, versions required by the
+current project, and the configured number of newest complete versions.
+
+Cache cleaning acquires an exclusive maintenance lock. Installation and repair
+hold a shared maintenance lock so verified archives cannot disappear while an
+operation is using them.
 
 ## Shell Onboarding
 

@@ -5,6 +5,7 @@ use std::{
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::Arc,
+    thread,
     time::{Duration, SystemTime},
 };
 
@@ -15,12 +16,12 @@ use jolter_runtime::{
     PackageManagerHash, PackageManagerHashAlgorithm, PackageManagerKind, PackageManagerRequest,
     RuntimeKind, RuntimeRequest,
 };
-use jolter_storage::{InstalledRuntime, InstalledTool, Storage, runtime_executable_in};
+use jolter_storage::{CacheStats, InstalledRuntime, InstalledTool, Storage, runtime_executable_in};
 use nodejs_semver::{Range as NodeRange, Version as NodeVersion};
 use reqwest::{
-    Url,
+    StatusCode, Url,
     blocking::Client,
-    header::ACCEPT,
+    header::{ACCEPT, RETRY_AFTER},
     redirect::{Attempt, Policy},
 };
 use semver::Version;
@@ -35,6 +36,8 @@ const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 100_000;
 const METADATA_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60);
+const MAX_HTTP_ATTEMPTS: usize = 3;
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
@@ -207,6 +210,18 @@ pub struct ToolInstallOutcome {
     pub downloaded: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovalOutcome {
+    pub path: PathBuf,
+    pub reclaimed_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheCleanOutcome {
+    pub removed_files: u64,
+    pub reclaimed_bytes: u64,
+}
+
 pub trait HttpClient: Send + Sync {
     fn get_text(&self, url: &str) -> Result<String, InstallerError>;
     fn get_npm_metadata(&self, url: &str) -> Result<String, InstallerError> {
@@ -238,24 +253,69 @@ impl ReqwestHttpClient {
         accept: Option<&str>,
     ) -> Result<reqwest::blocking::Response, InstallerError> {
         ensure_https(url)?;
-        let mut request = self.client.get(url);
-        if let Some(accept) = accept {
-            request = request.header(ACCEPT, accept);
+        for attempt in 0..MAX_HTTP_ATTEMPTS {
+            let mut request = self.client.get(url);
+            if let Some(accept) = accept {
+                request = request.header(ACCEPT, accept);
+            }
+            match request.send() {
+                Ok(response)
+                    if retryable_status(response.status()) && attempt + 1 < MAX_HTTP_ATTEMPTS =>
+                {
+                    thread::sleep(retry_delay(attempt, response.headers().get(RETRY_AFTER)));
+                }
+                Ok(response) => {
+                    let response =
+                        response
+                            .error_for_status()
+                            .map_err(|source| InstallerError::Http {
+                                url: url.to_owned(),
+                                source,
+                            })?;
+                    ensure_https(response.url().as_str())?;
+                    return Ok(response);
+                }
+                Err(source)
+                    if retryable_request_error(&source) && attempt + 1 < MAX_HTTP_ATTEMPTS =>
+                {
+                    thread::sleep(retry_delay(attempt, None));
+                }
+                Err(source) => {
+                    return Err(InstallerError::Http {
+                        url: url.to_owned(),
+                        source,
+                    });
+                }
+            }
         }
-        let response = request
-            .send()
-            .map_err(|source| InstallerError::Http {
-                url: url.to_owned(),
-                source,
-            })?
-            .error_for_status()
-            .map_err(|source| InstallerError::Http {
-                url: url.to_owned(),
-                source,
-            })?;
-        ensure_https(response.url().as_str())?;
-        Ok(response)
+        unreachable!("the bounded HTTP attempt loop always returns on its final attempt")
     }
+}
+
+fn retryable_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::REQUEST_TIMEOUT
+            | StatusCode::TOO_MANY_REQUESTS
+            | StatusCode::INTERNAL_SERVER_ERROR
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+fn retryable_request_error(error: &reqwest::Error) -> bool {
+    error.is_connect() || error.is_timeout() || error.is_request()
+}
+
+fn retry_delay(attempt: usize, retry_after: Option<&reqwest::header::HeaderValue>) -> Duration {
+    if let Some(seconds) = retry_after
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return Duration::from_secs(seconds).min(MAX_RETRY_AFTER);
+    }
+    Duration::from_millis(250 * (1_u64 << attempt.min(4)))
 }
 
 impl HttpClient for ReqwestHttpClient {
@@ -465,6 +525,65 @@ impl Installer {
         )
     }
 
+    pub fn uninstall_runtime(
+        &self,
+        kind: RuntimeKind,
+        version: &Version,
+    ) -> Result<RemovalOutcome, InstallerError> {
+        self.storage.ensure_layout()?;
+        let maintenance = self.maintenance_lock()?;
+        FileExt::lock_shared(&maintenance).map_err(InstallerError::Io)?;
+        let install = self.install_lock(kind, version)?;
+        FileExt::lock(&install).map_err(InstallerError::Io)?;
+        let path = self.storage.runtime_version_dir(kind, version);
+        remove_installation(
+            &self.storage,
+            path,
+            &self.storage.runtime_dir(kind),
+            InstallationType::Runtime,
+        )
+    }
+
+    pub fn uninstall_package_manager(
+        &self,
+        kind: PackageManagerKind,
+        version: &Version,
+    ) -> Result<RemovalOutcome, InstallerError> {
+        self.storage.ensure_layout()?;
+        let maintenance = self.maintenance_lock()?;
+        FileExt::lock_shared(&maintenance).map_err(InstallerError::Io)?;
+        let install = self.tool_install_lock(kind, version)?;
+        FileExt::lock(&install).map_err(InstallerError::Io)?;
+        let path = self.storage.tool_version_dir(kind, version);
+        remove_installation(
+            &self.storage,
+            path,
+            &self.storage.tool_dir(kind),
+            InstallationType::PackageManager,
+        )
+    }
+
+    pub fn clean_cache(&self) -> Result<CacheCleanOutcome, InstallerError> {
+        self.storage.ensure_layout()?;
+        let maintenance = self.maintenance_lock()?;
+        FileExt::lock(&maintenance).map_err(InstallerError::Io)?;
+        let mut outcome = CacheCleanOutcome::default();
+        for name in ["downloads", "metadata"] {
+            let path = self.storage.cache_dir().join(name);
+            let stats = self.storage.path_stats(&path)?;
+            outcome.removed_files = outcome.removed_files.saturating_add(stats.files);
+            outcome.reclaimed_bytes = outcome.reclaimed_bytes.saturating_add(stats.bytes);
+            if path.exists() {
+                fs::remove_dir_all(&path).map_err(|source| InstallerError::CacheCleanup {
+                    path: path.clone(),
+                    source,
+                })?;
+            }
+            fs::create_dir_all(&path).map_err(InstallerError::Io)?;
+        }
+        Ok(outcome)
+    }
+
     fn install_package_manager_inner(
         &self,
         request: &PackageManagerRequest,
@@ -472,6 +591,8 @@ impl Installer {
         repair: bool,
     ) -> Result<ToolInstallOutcome, InstallerError> {
         self.storage.ensure_layout()?;
+        let maintenance = self.maintenance_lock()?;
+        FileExt::lock_shared(&maintenance).map_err(InstallerError::Io)?;
         let release = self.resolve_package_manager(request)?;
         validate_node_engine(
             release.kind,
@@ -572,6 +693,8 @@ impl Installer {
         repair: bool,
     ) -> Result<InstallOutcome, InstallerError> {
         self.storage.ensure_layout()?;
+        let maintenance = self.maintenance_lock()?;
+        FileExt::lock_shared(&maintenance).map_err(InstallerError::Io)?;
         let release = self.resolve(request)?;
         let destination = self
             .storage
@@ -777,6 +900,30 @@ impl Installer {
             .map_err(InstallerError::Io)
     }
 
+    fn maintenance_lock(&self) -> Result<File, InstallerError> {
+        let directory = self.storage.cache_dir().join("locks");
+        fs::create_dir_all(&directory).map_err(InstallerError::Io)?;
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(directory.join("maintenance.lock"))
+            .map_err(InstallerError::Io)
+    }
+
+    fn metadata_lock(&self, cache_key: &str) -> Result<File, InstallerError> {
+        let directory = self.storage.cache_dir().join("locks");
+        fs::create_dir_all(&directory).map_err(InstallerError::Io)?;
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(directory.join(format!("metadata-{cache_key}.lock")))
+            .map_err(InstallerError::Io)
+    }
+
     fn obtain_archive(&self, artifact: &Artifact) -> Result<PathBuf, InstallerError> {
         let directory = self.storage.cache_dir().join("downloads");
         fs::create_dir_all(&directory).map_err(InstallerError::Io)?;
@@ -822,6 +969,8 @@ impl Installer {
             url.to_owned()
         };
         let cache_key = format!("{:x}", Sha256::digest(cache_source.as_bytes()));
+        let metadata_lock = self.metadata_lock(&cache_key)?;
+        FileExt::lock(&metadata_lock).map_err(InstallerError::Io)?;
         let cache_path = directory.join(format!("{cache_key}.txt"));
         let cached = fs::read_to_string(&cache_path).ok();
         let fresh = fs::metadata(&cache_path)
@@ -853,6 +1002,38 @@ impl Installer {
             Err(error) => cached.ok_or(error),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InstallationType {
+    Runtime,
+    PackageManager,
+}
+
+fn remove_installation(
+    storage: &Storage,
+    path: PathBuf,
+    expected_parent: &Path,
+    installation_type: InstallationType,
+) -> Result<RemovalOutcome, InstallerError> {
+    if path.parent() != Some(expected_parent) {
+        return Err(InstallerError::UnsafeRemoval { path });
+    }
+    if !path.exists() {
+        return Err(match installation_type {
+            InstallationType::Runtime => InstallerError::RuntimeNotInstalled { path },
+            InstallationType::PackageManager => InstallerError::ToolNotInstalled { path },
+        });
+    }
+    let CacheStats { bytes, .. } = storage.path_stats(&path)?;
+    fs::remove_dir_all(&path).map_err(|source| InstallerError::RemoveInstallation {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(RemovalOutcome {
+        path,
+        reclaimed_bytes: bytes,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1725,12 +1906,28 @@ pub enum InstallerError {
     CorruptInstallation { path: PathBuf },
     #[error("existing package manager installation at {path} is incomplete")]
     CorruptToolInstallation { path: PathBuf },
+    #[error("runtime installation was not found at {path}")]
+    RuntimeNotInstalled { path: PathBuf },
+    #[error("package manager installation was not found at {path}")]
+    ToolNotInstalled { path: PathBuf },
     #[error("no entrypoint is defined for package manager {0}")]
     MissingToolEntrypoint(PackageManagerKind),
     #[error("refusing to remove runtime path outside its expected parent: {path}")]
     UnsafeRemoval { path: PathBuf },
     #[error("failed to remove incomplete runtime installation at {path}: {source}")]
     RemoveCorrupt {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to remove installation at {path}: {source}")]
+    RemoveInstallation {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to clean cache directory {path}: {source}")]
+    CacheCleanup {
         path: PathBuf,
         #[source]
         source: io::Error,
@@ -1858,6 +2055,210 @@ mod tests {
             GithubRuntime::Bun.asset_name(baseline).unwrap(),
             "bun-windows-x64-baseline.zip"
         );
+        let linux_arm = Platform {
+            os: OperatingSystem::Linux,
+            arch: Architecture::Arm64,
+            bun_cpu: BunCpu::Standard,
+        };
+        assert_eq!(
+            GithubRuntime::Bun.asset_name(linux_arm).unwrap(),
+            "bun-linux-aarch64.zip"
+        );
+        assert_eq!(
+            GithubRuntime::Deno.asset_name(linux_arm).unwrap(),
+            "deno-aarch64-unknown-linux-gnu.zip"
+        );
+        let mac_x64 = Platform {
+            os: OperatingSystem::MacOs,
+            arch: Architecture::X64,
+            bun_cpu: BunCpu::Standard,
+        };
+        assert_eq!(
+            GithubRuntime::Deno.asset_name(mac_x64).unwrap(),
+            "deno-x86_64-apple-darwin.zip"
+        );
+        let unsupported = Platform {
+            bun_cpu: BunCpu::Unsupported,
+            ..windows
+        };
+        assert!(matches!(
+            GithubRuntime::Bun.asset_name(unsupported),
+            Err(InstallerError::UnsupportedBunCpu)
+        ));
+
+        for (platform, expected) in [
+            (
+                Platform {
+                    os: OperatingSystem::Windows,
+                    arch: Architecture::Arm64,
+                    bun_cpu: BunCpu::Standard,
+                },
+                "win-arm64-zip",
+            ),
+            (
+                Platform {
+                    os: OperatingSystem::Linux,
+                    arch: Architecture::X64,
+                    bun_cpu: BunCpu::Standard,
+                },
+                "linux-x64",
+            ),
+            (linux_arm, "linux-arm64"),
+            (mac_x64, "osx-x64-tar"),
+            (
+                Platform {
+                    os: OperatingSystem::MacOs,
+                    arch: Architecture::Arm64,
+                    bun_cpu: BunCpu::Standard,
+                },
+                "osx-arm64-tar",
+            ),
+        ] {
+            assert_eq!(node_target(platform).index_name, expected);
+        }
+    }
+
+    #[test]
+    fn resolves_node_lts_from_the_official_index_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        let platform = Platform::current().unwrap();
+        let target = node_target(platform);
+        let tagged_version = "v24.3.0";
+        let file_name = format!(
+            "node-{tagged_version}-{}.{}",
+            target.archive_name,
+            target.format.cache_extension()
+        );
+        let sums_url = format!("https://nodejs.org/dist/{tagged_version}/SHASUMS256.txt");
+        let checksum = "b".repeat(64);
+        let metadata = serde_json::json!([
+            {
+                "version": "v25.0.0",
+                "lts": false,
+                "files": [target.index_name]
+            },
+            {
+                "version": tagged_version,
+                "lts": "Krypton",
+                "files": [target.index_name]
+            }
+        ])
+        .to_string();
+        let client = Arc::new(FakeHttpClient {
+            text: HashMap::from([
+                (NODE_INDEX_URL.to_owned(), metadata),
+                (
+                    sums_url,
+                    format!("{checksum}  {file_name}\n{}  other.zip", "a".repeat(64)),
+                ),
+            ]),
+            downloads: HashMap::new(),
+            text_count: Mutex::new(0),
+            download_count: Mutex::new(0),
+        });
+        let installer = Installer::with_client(storage, platform, client);
+
+        let release = installer.resolve(&"node@lts".parse().unwrap()).unwrap();
+
+        assert_eq!(release.kind, RuntimeKind::Node);
+        assert_eq!(release.version, Version::new(24, 3, 0));
+        assert_eq!(release.artifact.file_name, file_name);
+        assert_eq!(
+            release.artifact.integrity,
+            ArtifactIntegrity::Sha256(checksum)
+        );
+    }
+
+    #[test]
+    fn resolves_bun_and_deno_fallback_checksums() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        let platform = Platform {
+            os: OperatingSystem::Windows,
+            arch: Architecture::X64,
+            bun_cpu: BunCpu::Standard,
+        };
+        let bun_asset = GithubRuntime::Bun.asset_name(platform).unwrap();
+        let deno_asset = GithubRuntime::Deno.asset_name(platform).unwrap();
+        let bun_download = format!("https://example.test/{bun_asset}");
+        let deno_download = format!("https://example.test/{deno_asset}");
+        let bun_sums = "https://example.test/SHASUMS256.txt".to_owned();
+        let deno_sum = format!("https://example.test/{deno_asset}.sha256sum");
+        let bun_checksum = "b".repeat(64);
+        let deno_checksum = "d".repeat(64);
+        let bun_metadata_url =
+            format!("{GITHUB_API}/repos/oven-sh/bun/releases?per_page=100&page=1");
+        let deno_metadata_url =
+            format!("{GITHUB_API}/repos/denoland/deno/releases?per_page=100&page=1");
+        let bun_metadata = serde_json::json!([{
+            "tag_name": "bun-v1.3.2",
+            "draft": false,
+            "prerelease": false,
+            "assets": [
+                {
+                    "name": bun_asset.clone(),
+                    "browser_download_url": bun_download,
+                    "digest": null
+                },
+                {
+                    "name": "SHASUMS256.txt",
+                    "browser_download_url": bun_sums,
+                    "digest": null
+                }
+            ]
+        }])
+        .to_string();
+        let deno_metadata = serde_json::json!([{
+            "tag_name": "v2.4.1",
+            "draft": false,
+            "prerelease": false,
+            "assets": [
+                {
+                    "name": deno_asset.clone(),
+                    "browser_download_url": deno_download,
+                    "digest": null
+                },
+                {
+                    "name": format!("{deno_asset}.sha256sum"),
+                    "browser_download_url": deno_sum,
+                    "digest": null
+                }
+            ]
+        }])
+        .to_string();
+        let client = Arc::new(FakeHttpClient {
+            text: HashMap::from([
+                (bun_metadata_url, bun_metadata),
+                (
+                    "https://example.test/SHASUMS256.txt".to_owned(),
+                    format!("{bun_checksum} *{bun_asset}"),
+                ),
+                (deno_metadata_url, deno_metadata),
+                (
+                    format!("https://example.test/{deno_asset}.sha256sum"),
+                    format!("{deno_checksum}  {deno_asset}"),
+                ),
+            ]),
+            downloads: HashMap::new(),
+            text_count: Mutex::new(0),
+            download_count: Mutex::new(0),
+        });
+        let installer = Installer::with_client(storage, platform, client);
+
+        let bun = installer.resolve(&"bun@1".parse().unwrap()).unwrap();
+        let deno = installer.resolve(&"deno@2".parse().unwrap()).unwrap();
+
+        assert_eq!(bun.version, Version::new(1, 3, 2));
+        assert_eq!(
+            bun.artifact.integrity,
+            ArtifactIntegrity::Sha256(bun_checksum)
+        );
+        assert_eq!(deno.version, Version::new(2, 4, 1));
+        assert_eq!(
+            deno.artifact.integrity,
+            ArtifactIntegrity::Sha256(deno_checksum)
+        );
     }
 
     #[test]
@@ -1966,6 +2367,112 @@ mod tests {
         assert!(outcome.tool.path.join(".jolter-tool.json").is_file());
         let manifest = fs::read_to_string(outcome.tool.path.join(".jolter-tool.json")).unwrap();
         assert!(manifest.contains(&format!("sha224.{corepack_hash}")));
+        assert_eq!(*client.download_count.lock().unwrap(), 1);
+
+        let reused = installer
+            .install_package_manager(&"pnpm@latest".parse().unwrap(), &Version::new(20, 0, 0))
+            .unwrap();
+        assert!(!reused.downloaded);
+    }
+
+    #[test]
+    fn repairs_and_uninstalls_package_managers_and_cleans_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+        let archive = tar_gz_with_file("package/bin/pnpm.cjs", b"fake pnpm");
+        let integrity = format!("sha512-{}", BASE64.encode(Sha512::digest(&archive)));
+        let metadata_url = "https://registry.npmjs.org/pnpm".to_owned();
+        let download_url = "https://registry.npmjs.org/pnpm/-/pnpm-10.2.0.tgz".to_owned();
+        let metadata = serde_json::json!({
+            "dist-tags": { "latest": "10.2.0" },
+            "versions": {
+                "10.2.0": {
+                    "version": "10.2.0",
+                    "dist": {
+                        "tarball": download_url.clone(),
+                        "integrity": integrity
+                    }
+                }
+            }
+        })
+        .to_string();
+        let client = Arc::new(FakeHttpClient {
+            text: HashMap::from([(metadata_url, metadata)]),
+            downloads: HashMap::from([(download_url, archive)]),
+            text_count: Mutex::new(0),
+            download_count: Mutex::new(0),
+        });
+        let installer =
+            Installer::with_client(storage.clone(), Platform::current().unwrap(), client);
+        let version = Version::new(10, 2, 0);
+        fs::create_dir_all(storage.tool_version_dir(PackageManagerKind::Pnpm, &version)).unwrap();
+
+        assert!(matches!(
+            installer
+                .install_package_manager(&"pnpm@10.2.0".parse().unwrap(), &Version::new(20, 0, 0)),
+            Err(InstallerError::CorruptToolInstallation { .. })
+        ));
+        let repaired = installer
+            .repair_package_manager(&"pnpm@10.2.0".parse().unwrap(), &Version::new(20, 0, 0))
+            .unwrap();
+        assert!(repaired.downloaded);
+        let removed = installer
+            .uninstall_package_manager(PackageManagerKind::Pnpm, &version)
+            .unwrap();
+        assert!(removed.reclaimed_bytes > 0);
+        assert!(matches!(
+            installer.uninstall_package_manager(PackageManagerKind::Pnpm, &version),
+            Err(InstallerError::ToolNotInstalled { .. })
+        ));
+
+        let metadata_cache = storage.cache_dir().join("metadata").join("orphan.txt");
+        fs::create_dir_all(metadata_cache.parent().unwrap()).unwrap();
+        fs::write(&metadata_cache, b"metadata").unwrap();
+        let cleaned = installer.clean_cache().unwrap();
+        assert!(cleaned.removed_files >= 2);
+        assert!(!metadata_cache.exists());
+    }
+
+    #[test]
+    fn concurrent_runtime_installation_downloads_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        let platform = Platform::current().unwrap();
+        let asset_name = GithubRuntime::Deno.asset_name(platform).unwrap();
+        let executable_name = if cfg!(windows) { "deno.exe" } else { "deno" };
+        let archive = zip_with_file(executable_name, b"fake deno");
+        let checksum = format!("{:x}", Sha256::digest(&archive));
+        let download_url = format!("https://example.test/{asset_name}");
+        let metadata_url = format!("{GITHUB_API}/repos/denoland/deno/releases?per_page=100&page=1");
+        let metadata = serde_json::json!([{
+            "tag_name": "v2.8.3",
+            "draft": false,
+            "prerelease": false,
+            "assets": [{
+                "name": asset_name,
+                "browser_download_url": download_url.clone(),
+                "digest": format!("sha256:{checksum}")
+            }]
+        }])
+        .to_string();
+        let client = Arc::new(FakeHttpClient {
+            text: HashMap::from([(metadata_url, metadata)]),
+            downloads: HashMap::from([(download_url, archive)]),
+            text_count: Mutex::new(0),
+            download_count: Mutex::new(0),
+        });
+        let first = Installer::with_client(storage.clone(), platform, client.clone());
+        let second = Installer::with_client(storage, platform, client.clone());
+
+        let first = thread::spawn(move || first.install(&"deno@2".parse().unwrap()).unwrap());
+        let second = thread::spawn(move || second.install(&"deno@2".parse().unwrap()).unwrap());
+        let outcomes = [first.join().unwrap(), second.join().unwrap()];
+
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.downloaded).count(),
+            1
+        );
         assert_eq!(*client.download_count.lock().unwrap(), 1);
     }
 
@@ -2104,5 +2611,73 @@ mod tests {
         header.set_cksum();
         archive.append_data(&mut header, path, contents).unwrap();
         archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn retries_only_transient_http_statuses_with_bounded_delays() {
+        assert!(retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(!retryable_status(StatusCode::NOT_FOUND));
+        assert_eq!(retry_delay(0, None), Duration::from_millis(250));
+        let retry_after = reqwest::header::HeaderValue::from_static("60");
+        assert_eq!(retry_delay(0, Some(&retry_after)), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn validates_integrity_and_checksum_error_paths() {
+        assert!(matches!(
+            ArtifactIntegrity::from_sri("sha256-deadbeef"),
+            Err(InstallerError::UnsupportedIntegrity(_))
+        ));
+        assert!(matches!(
+            ArtifactIntegrity::from_sri("sha512-not-base64"),
+            Err(InstallerError::InvalidIntegrity(_))
+        ));
+        assert!(matches!(
+            Artifact {
+                url: "https://example.test/archive.zip".to_owned(),
+                integrity: ArtifactIntegrity::Sha256("a".repeat(64)),
+                file_name: "../archive.zip".to_owned(),
+                format: ArchiveFormat::Zip,
+                strip_components: 0,
+            }
+            .validate(),
+            Err(InstallerError::InvalidArtifactName(_))
+        ));
+        assert!(matches!(
+            checksum_for("", "missing.zip"),
+            Err(InstallerError::ChecksumNotFound { .. })
+        ));
+        assert!(matches!(
+            parse_checksum_value(""),
+            Err(InstallerError::EmptyChecksum)
+        ));
+
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(temp.path(), b"contents").unwrap();
+        assert!(matches!(
+            verify_sha256(temp.path(), &"0".repeat(64)),
+            Err(InstallerError::ChecksumMismatch { .. })
+        ));
+        let wrong_sha512 = BASE64.encode([0_u8; 64]);
+        assert!(matches!(
+            verify_sha512(temp.path(), &wrong_sha512),
+            Err(InstallerError::ChecksumMismatch { .. })
+        ));
+        for algorithm in [
+            PackageManagerHashAlgorithm::Sha1,
+            PackageManagerHashAlgorithm::Sha256,
+            PackageManagerHashAlgorithm::Sha384,
+            PackageManagerHashAlgorithm::Sha512,
+        ] {
+            let expected = PackageManagerHash {
+                algorithm,
+                value: "0".repeat(algorithm.hex_length()),
+            };
+            assert!(matches!(
+                verify_package_manager_hash(temp.path(), &expected),
+                Err(InstallerError::PackageManagerHashMismatch { .. })
+            ));
+        }
     }
 }

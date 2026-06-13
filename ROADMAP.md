@@ -8,12 +8,12 @@ be the source of truth for project status, sequencing, and release readiness.
 
 ## Project Position
 
-Current version: `0.1.0`
+Current version: `0.2.0`
 
-Current maturity: **alpha**
+Current maturity: **beta / release-candidate preparation**
 
-Current phase: **core toolchain lifecycle implemented; developer experience and
-production hardening are in progress**
+Current phase: **stable-core implementation complete; hosted release
+validation is in progress**
 
 Jolter can currently resolve, securely install, activate, pin, synchronize,
 repair, and dispatch JavaScript runtimes. It can also install and dispatch
@@ -21,10 +21,12 @@ project-pinned npm, pnpm, and Yarn versions. The main architecture described by
 the specification exists as a Rust workspace and the essential end-to-end
 workflow is functional.
 
-Jolter is not yet ready for a stable release. The largest remaining gaps are
-cross-platform CI coverage, deeper diagnostics and conflict remediation,
-lifecycle commands such as uninstall, and the future CI/plugin/tool manifest
-work described in the specification.
+Jolter now includes the stable-core command surface, deeper diagnostics,
+storage lifecycle commands, CI setup, release workflows, and measured coverage
+above the specification target. It remains pre-1.0 until the configured native,
+WSL, provider-smoke, audit, and release workflows have passed through a
+release-candidate period. The plugin and extended-tool manifest remain
+explicitly post-stable work.
 
 ## Status Legend
 
@@ -116,6 +118,7 @@ Current schema:
 
 ```json
 {
+  "schemaVersion": 1,
   "runtime": {
     "node": "24.x"
   },
@@ -152,10 +155,14 @@ project to combine a Node version file with a package manager declaration in
 | `jolter pin <runtime>` | Complete | Writes the runtime requirement to `jolter.json`. |
 | `jolter setup` | Complete | Installs shims and prints exact current-session and persistent `PATH` commands for PowerShell, Command Prompt, Bash, Zsh, and Fish. |
 | `jolter list` | Complete for current artifacts | Lists runtimes and managed package managers, active runtime markers, paths, and readiness. |
-| `jolter doctor` | Partial | Checks config, runtime, package manager, shims, and `PATH`; supports human-readable and JSON output. |
+| `jolter doctor` | Complete for stable core | Probes versions, validates manifests and compatibility, detects conflicts, and emits remediation in text or JSON. |
 | `jolter repair` | Complete for current artifacts | Reinstalls incomplete runtime and package manager installations. |
 | `jolter sync` | Complete for current schema | Makes the runtime and package manager match project requirements. |
-| `jolter setup-ci` | Planned | Not implemented. |
+| `jolter uninstall <tool@version>` | Complete | Removes exact versions with active-runtime protection and shared installer locks. |
+| `jolter prune` | Complete | Preserves active, project-required, and configured newest versions; supports dry runs. |
+| `jolter cache status/clean` | Complete | Inspects and safely cleans metadata and artifact caches. |
+| `jolter setup-ci` | Complete | Synchronizes exact versions, reports cache/shim paths, emits JSON, and integrates with GitHub Actions outputs. |
+| `jolter completions` | Complete | Generates Bash, Zsh, Fish, Elvish, and PowerShell completions. |
 
 ### Automatic Switching and Shims
 
@@ -172,10 +179,10 @@ Status: **Complete for invocation-time switching**
 - Automatic setup shell detection supports PowerShell, Bash, Zsh, and Fish.
 - Explicit setup guidance is available for Command Prompt.
 
-Remaining work:
+Release validation:
 
-- Detect conflicting version managers and shadowed shims.
-- Add execution tests for each supported shell and WSL.
+- execute the configured shell and WSL jobs on GitHub-hosted runners;
+- observe real user environments with multiple version managers installed.
 
 ### Storage
 
@@ -200,7 +207,7 @@ Status: **Complete for current artifacts**
 
 ### Diagnostics
 
-Status: **Partial**
+Status: **Complete for non-network stable-core diagnostics**
 
 Implemented checks:
 
@@ -211,22 +218,25 @@ Implemented checks:
 - installed shim set
 - shims directory presence on `PATH`
 - machine-readable JSON output with overall health
-
-Remaining checks:
-
-- execute `--version` safely and compare the reported version
-- installation manifest integrity
-- corrupt or orphaned cache entries
+- bounded runtime and package-manager `--version` execution
+- installation manifest identity and integrity metadata
+- unrecognized cache entries
 - conflicting Node/version-manager executables earlier on `PATH`
 - unsupported CPU and operating system guidance
 - writable storage and executable permissions
-- doctor reporting for Node/package-manager engine compatibility
-- proxy and TLS diagnostics
+- Node/package-manager engine compatibility
+- proxy and certificate environment diagnostics
 - offline cache readiness
+- actionable remediation in human-readable and JSON output
+
+Future depth:
+
+- optional live proxy/TLS connectivity probes
+- full installed-file content attestation beyond archive manifests
 
 ### Testing
 
-Status: **Partial toward release requirements**
+Status: **Complete for repository release gates; hosted runs pending**
 
 Implemented:
 
@@ -239,16 +249,19 @@ Implemented:
 - project-aware shim tests
 - live npm registry smoke validation performed during development
 - strict Clippy validation with warnings denied
+- Windows x64, Linux x64, macOS x64, macOS ARM64, and WSL CI definitions
+- scheduled real-provider smoke installations
+- concurrent same-version installation regression coverage
+- bounded provider retry tests
+- measured line coverage of 83.48%
+- CI enforcement of the 80% line-coverage target
+- dependency vulnerability auditing
+- tagged release archives and SHA-256 files
 
-Remaining:
+Remaining research:
 
-- automated Windows, Linux, macOS, and WSL CI matrix
-- real provider installation smoke tests in CI
-- network failure and proxy integration tests
-- concurrent process integration tests
-- shell-specific shim execution tests
-- measured coverage reporting and enforcement of the 80% target
-- fuzzing for selectors, JSON, checksums, and archive paths
+- proxy/corporate-certificate integration infrastructure
+- selector, JSON, checksum, and archive-path fuzzing
 
 ## Specification Coverage
 
@@ -262,12 +275,12 @@ Remaining:
 | Project pinning | Complete | Runtime pinning is implemented. |
 | Automatic switching | Complete for commands | Self-shims resolve the project on every invocation. |
 | Reproducible sync | Complete for current schema | Runtime and package manager selectors are synchronized. |
-| Doctor | Partial | Core checks and JSON output exist; deeper health checks remain. |
+| Doctor | Complete for stable core | Version probes, manifests, engine checks, conflicts, cache, permissions, environment, and remediation are implemented. |
 | Repair | Complete for current artifacts | Incomplete runtime and tool directories are replaced safely. |
 | Security requirements | Complete for current providers | HTTPS, integrity checks, bounded extraction, and no telemetry. |
 | Telemetry | Complete by absence | No telemetry is collected. Opt-in telemetry is not implemented. |
-| Cross-platform support | Partial | Code paths exist; full CI validation is missing. |
-| 80% coverage target | Planned measurement | Tests exist, but coverage is not measured in CI. |
+| Cross-platform support | Release validation | Native and WSL workflows are configured; passing hosted runs are required before 1.0. |
+| 80% coverage target | Complete | Measured line coverage is 83.48% and CI fails below 80%. |
 | Extended tools manifest | Future | Deferred until after the package manager core stabilizes. |
 | CI setup command | Planned | No implementation yet. |
 | Plugin system | Future | Architecture boundaries help, but no public plugin API exists. |
@@ -332,7 +345,7 @@ Exit criteria met:
 
 ### Milestone 3: Developer Experience and Diagnostics
 
-Status: **In progress**
+Status: **Complete**
 
 Delivered:
 
@@ -343,13 +356,12 @@ Delivered:
 - npm-style package-manager Node.js engine compatibility validation.
 - exact Corepack-style `packageManager` hash parsing and archive verification.
 
-Remaining priority work:
+Additional delivery:
 
-1. Add runtime and package manager version probing to `doctor`.
-2. Detect conflicting `nvm`, `fnm`, Volta, Corepack, and system executable
-   precedence.
-3. Add clear remediation actions to doctor findings.
-4. Improve error messages for offline cache misses and provider failures.
+- runtime and package manager version probing with bounded execution;
+- nvm, fnm, Volta, Corepack, and system executable precedence checks;
+- remediation actions in text and JSON findings;
+- offline cache and provider failure guidance.
 
 Exit criteria:
 
@@ -362,19 +374,23 @@ Exit criteria:
 
 ### Milestone 4: Cross-Platform Release Engineering
 
-Status: **Planned**
+Status: **Implemented; hosted validation pending**
 
-Work:
+Delivered:
 
-1. Add CI for Windows x64, Linux x64, macOS x64, and macOS ARM64.
-2. Add WSL validation.
-3. Add release builds and checksums.
-4. Add smoke installations against real Node.js, Bun, Deno, and npm registry
-   providers.
-5. Add code coverage collection and enforce the 80% target.
-6. Add supply-chain auditing for Rust dependencies.
-7. Test proxies, corporate certificates, and interrupted downloads.
-8. Add installation documentation and release packaging.
+1. CI for Windows x64, Linux x64, macOS x64, and macOS ARM64.
+2. WSL validation workflow.
+3. Tagged release builds and SHA-256 files.
+4. Scheduled smoke installations against Node.js, Bun, Deno, and npm.
+5. Coverage collection with an 80% line threshold.
+6. Rust dependency vulnerability auditing.
+7. Installation documentation and release packaging.
+
+Remaining:
+
+1. Observe successful hosted runs on all configured runners.
+2. Add dedicated proxy, corporate-certificate, and interrupted-download
+   integration infrastructure.
 
 Exit criteria:
 
@@ -386,17 +402,23 @@ Exit criteria:
 
 ### Milestone 5: Stable Core Release
 
-Status: **Planned**
+Status: **In release-candidate validation**
 
-Work:
+Delivered:
 
-1. Stabilize configuration and storage schemas.
-2. Add migration rules for future schema changes.
-3. Add uninstall/prune commands and cache cleanup.
-4. Define compatibility and support policy.
-5. Complete security review and threat-model update.
-6. Publish complete command and troubleshooting documentation.
-7. Run a beta period with real multi-project workflows.
+1. Configuration schema version 1 with legacy defaulting and fail-closed
+   unknown-version handling.
+2. Storage and configuration compatibility policy.
+3. Uninstall, prune, and cache cleanup commands.
+4. Installation, CI, lifecycle, compatibility, diagnostics, and
+   troubleshooting documentation.
+5. Updated locking and doctor execution threat-model documentation.
+
+Remaining:
+
+1. Complete an external or independent security review.
+2. Run the beta period with real multi-project workflows.
+3. Confirm all hosted release and provider-smoke jobs.
 
 Exit criteria:
 
@@ -410,7 +432,7 @@ Target release: `1.0.0`
 
 ### Milestone 6: CI Automation
 
-Status: **Future after the stable core**
+Status: **Complete for the initial provider-neutral command**
 
 Planned command:
 
@@ -418,14 +440,15 @@ Planned command:
 jolter setup-ci
 ```
 
-Potential scope:
+Delivered scope:
 
-- detect common CI providers.
-- emit or apply cache configuration.
-- install and activate exact project toolchains.
-- produce machine-readable resolved versions.
-- support offline or prewarmed caches.
-- avoid provider-specific lock-in in core APIs.
+- detects GitHub Actions, GitLab CI, CircleCI, Azure Pipelines, Buildkite, and
+  generic environments;
+- installs and activates exact project toolchains;
+- produces machine-readable resolved versions and cache/shim paths;
+- emits GitHub Actions path and step outputs;
+- supports offline or prewarmed caches through the normal installer;
+- keeps provider integration in the CLI rather than core APIs.
 
 ### Milestone 7: Extended Toolchain Manifest
 
@@ -477,37 +500,32 @@ Constraints:
 
 Highest priority:
 
-1. Runtime and package manager version probing.
-2. Conflict detection and actionable doctor remediation.
-3. Cross-platform GitHub Actions matrix.
-4. Coverage reporting.
-5. Improved offline cache-miss and provider failure messages.
+1. Run and stabilize the new hosted native, WSL, audit, and coverage jobs.
+2. Run and stabilize the scheduled real-provider smoke workflow.
+3. Complete an independent security review.
+4. Exercise release archives in beta multi-project workflows.
+5. Add dedicated proxy and corporate-certificate integration tests.
 
 Medium priority:
 
-1. `jolter uninstall` and `jolter prune`.
-2. Cache inspection and cleanup.
-3. Better progress output for downloads and extraction.
-4. Provider retry policy with bounded backoff.
-5. Config schema versioning and migration plan.
-6. Shell completion generation.
-7. Machine-readable command output.
+1. Better progress output for downloads and extraction.
+2. Additional machine-readable output for mutating lifecycle commands.
+3. Fuzzing for selectors, JSON, checksums, and archive paths.
+4. Optional live network diagnostics.
 
 Later:
 
-1. `setup-ci`.
-2. extended tool manifest.
-3. plugin system.
-4. explicitly opt-in anonymous telemetry, only if the project decides it is
+1. extended tool manifest.
+2. plugin system.
+3. explicitly opt-in anonymous telemetry, only if the project decides it is
    useful and can document a privacy-preserving design.
 
 ## Release Risks
 
 ### Cross-Platform Confidence
 
-The code has explicit Windows, Linux, and macOS behavior, but the repository
-does not yet prove all paths continuously. CI coverage is required before
-calling the implementation broadly supported.
+Native and WSL workflows now encode the support matrix, but they must pass
+repeatedly on hosted runners before the implementation is called stable.
 
 ### Provider Changes
 
@@ -529,9 +547,9 @@ designed before stable releases add extended tools or plugins.
 
 ### Storage Lifecycle
 
-Install and repair are present, but removal and pruning are not. Long-lived
-users will accumulate versions and cache artifacts until lifecycle commands are
-implemented.
+Removal, pruning, cache cleanup, active-version protection, and shared
+maintenance locking are implemented. The remaining risk is validation against
+long-lived real-world storage accumulated across multiple pre-1.0 releases.
 
 ## Definition of Stable
 

@@ -187,6 +187,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0a7a9bfdb35811f9e59832f0f05975114d2251b415fb534108e6f34060fd772"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -820,14 +829,16 @@ dependencies = [
 
 [[package]]
 name = "jolter-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
+ "clap_complete",
  "jolter-core",
  "jolter-doctor",
  "jolter-runtime",
  "jolter-shim",
  "jolter-storage",
+ "semver",
  "serde_json",
  "tempfile",
  "thiserror",
@@ -835,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jolter-runtime",
  "serde",
@@ -846,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jolter-config",
  "jolter-doctor",
@@ -862,21 +873,24 @@ dependencies = [
 
 [[package]]
 name = "jolter-doctor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "base64",
  "jolter-resolver",
  "jolter-runtime",
  "jolter-shim",
  "jolter-storage",
+ "nodejs-semver",
  "semver",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]
 
 [[package]]
 name = "jolter-installer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "flate2",
@@ -898,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-resolver"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jolter-config",
  "jolter-runtime",
@@ -909,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "semver",
  "thiserror",
@@ -917,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-shim"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jolter-resolver",
  "jolter-runtime",
@@ -929,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jolter-runtime",
  "semver",

@@ -12,12 +12,14 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+clap_complete.workspace = true
 jolter-core = { path = "../core" }
 jolter-doctor = { path = "../doctor" }
 jolter-runtime = { path = "../runtime" }
 jolter-shim = { path = "../shim" }
 jolter-storage = { path = "../storage" }
 serde_json.workspace = true
+semver.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
