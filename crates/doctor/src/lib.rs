@@ -17,6 +17,9 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(not(windows))]
+use std::os::unix::fs::PermissionsExt;
+
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROBE_OUTPUT: u64 = 16 * 1024;
 
@@ -1021,7 +1024,6 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let script = directory.path().join("probe");
             fs::write(&script, "#!/bin/sh\nprintf '3.2.1\\n'").unwrap();
-            use std::os::unix::fs::PermissionsExt;
             let mut permissions = fs::metadata(&script).unwrap().permissions();
             permissions.set_mode(0o755);
             fs::set_permissions(&script, permissions).unwrap();
