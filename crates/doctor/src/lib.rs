@@ -374,37 +374,36 @@ fn valid_manifest_artifact(url: &str, integrity: &str) -> bool {
             .is_some_and(|value| value.len() == 64))
 }
 
-fn runtime_permission_check(_runtime: &InstalledRuntime) -> Check {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        match fs::metadata(_runtime.executable()) {
-            Ok(metadata) if metadata.permissions().mode() & 0o111 != 0 => Check::pass(
-                "runtime permissions",
-                "runtime executable permission is set",
-            ),
-            Ok(_) => Check::fail(
-                "runtime permissions",
-                format!("{} is not executable", _runtime.executable().display()),
-                "run `jolter repair` to restore executable permissions",
-            ),
-            Err(error) => Check::fail(
-                "runtime permissions",
-                format!(
-                    "could not inspect {}: {error}",
-                    _runtime.executable().display()
-                ),
-                "run `jolter repair` to replace the installation",
-            ),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        Check::pass(
+#[cfg(unix)]
+fn runtime_permission_check(runtime: &InstalledRuntime) -> Check {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::metadata(runtime.executable()) {
+        Ok(metadata) if metadata.permissions().mode() & 0o111 != 0 => Check::pass(
             "runtime permissions",
-            "runtime executable is present on Windows",
-        )
+            "runtime executable permission is set",
+        ),
+        Ok(_) => Check::fail(
+            "runtime permissions",
+            format!("{} is not executable", runtime.executable().display()),
+            "run `jolter repair` to restore executable permissions",
+        ),
+        Err(error) => Check::fail(
+            "runtime permissions",
+            format!(
+                "could not inspect {}: {error}",
+                runtime.executable().display()
+            ),
+            "run `jolter repair` to replace the installation",
+        ),
     }
+}
+
+#[cfg(not(unix))]
+fn runtime_permission_check(_runtime: &InstalledRuntime) -> Check {
+    Check::pass(
+        "runtime permissions",
+        "runtime executable is present on Windows",
+    )
 }
 
 fn package_manager_engine_check(tool: &InstalledTool, node_version: &Version) -> Check {
@@ -948,8 +947,6 @@ pub enum DoctorError {
 mod tests {
     use super::*;
     use jolter_runtime::PackageManagerKind;
-    #[cfg(not(windows))]
-    use std::io::Write;
 
     #[test]
     fn reports_a_matching_managed_package_manager_as_healthy() {
@@ -1021,13 +1018,14 @@ mod tests {
         }
         #[cfg(not(windows))]
         {
-            let mut script = tempfile::NamedTempFile::new().unwrap();
-            writeln!(script, "#!/bin/sh\nprintf '3.2.1\\n'").unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("probe");
+            fs::write(&script, "#!/bin/sh\nprintf '3.2.1\\n'").unwrap();
             use std::os::unix::fs::PermissionsExt;
-            let mut permissions = fs::metadata(script.path()).unwrap().permissions();
+            let mut permissions = fs::metadata(&script).unwrap().permissions();
             permissions.set_mode(0o755);
-            fs::set_permissions(script.path(), permissions).unwrap();
-            let output = run_probe(Command::new(script.path())).unwrap();
+            fs::set_permissions(&script, permissions).unwrap();
+            let output = run_probe(Command::new(&script)).unwrap();
             assert_eq!(
                 extract_version(&output.combined_output()),
                 Some(Version::new(3, 2, 1))
