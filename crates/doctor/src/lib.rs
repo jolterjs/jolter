@@ -17,9 +17,6 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[cfg(not(windows))]
-use std::os::unix::fs::PermissionsExt;
-
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROBE_OUTPUT: u64 = 16 * 1024;
 
@@ -950,6 +947,9 @@ pub enum DoctorError {
 mod tests {
     use super::*;
     use jolter_runtime::PackageManagerKind;
+
+    #[cfg(not(windows))]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn reports_a_matching_managed_package_manager_as_healthy() {
