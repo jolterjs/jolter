@@ -157,13 +157,16 @@ Future versions may support:
 
 # Commands
 
-## Install Runtime
+## Install And Activate A Tool
 
 ```bash
 jolter use node@24
+jolter use pnpm@10
 ```
 
-Installs runtime if missing and activates it.
+Installs a runtime or managed package manager if missing and activates its
+exact resolved version. Managed package managers require an active Node.js
+runtime.
 
 ---
 
@@ -228,7 +231,7 @@ Ensures local environment matches project requirements.
 jolter uninstall node@24.1.0
 ```
 
-Removes an exact runtime or managed package manager version. Active runtimes
+Removes an exact runtime or managed package manager version. Active versions
 require explicit `--force`.
 
 ---
@@ -272,6 +275,10 @@ jolter.json
 ```
 
 and activate the required runtime.
+
+Project package manager requirements override globally active managed package
+manager versions. When no project requirement applies, package manager shims
+use the exact version activated by `jolter use`.
 
 Priority:
 

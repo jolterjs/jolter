@@ -1,6 +1,6 @@
 # Jolter Roadmap
 
-Last updated: June 12, 2026
+Last updated: June 13, 2026
 
 This roadmap translates the goals in [`spec.md`](spec.md) into an implementation
 plan and records the repository's current development state. It is intended to
@@ -16,8 +16,8 @@ Current phase: **stable-core implementation complete; hosted release
 validation is in progress**
 
 Jolter can currently resolve, securely install, activate, pin, synchronize,
-repair, and dispatch JavaScript runtimes. It can also install and dispatch
-project-pinned npm, pnpm, and Yarn versions. The main architecture described by
+repair, and dispatch JavaScript runtimes. It can also manually activate or
+project-pin npm, pnpm, and Yarn versions. The main architecture described by
 the specification exists as a Rust workspace and the essential end-to-end
 workflow is functional.
 
@@ -91,6 +91,8 @@ Status: **Complete for npm, pnpm, and Yarn alpha workflows**
   local reuse.
 - Verified, cached, atomic installation under `~/.jolter/tools/`.
 - Project-aware dispatch through the `npm`, `npx`, `pnpm`, and `yarn` shims.
+- Manual installation and global activation through `jolter use`.
+- Exact active package manager persistence and inventory markers.
 - Package manager synchronization and repair.
 - Doctor checks for matching managed installations.
 
@@ -151,14 +153,14 @@ project to combine a Node version file with a package manager declaration in
 
 | Command | Status | Current behavior |
 | --- | --- | --- |
-| `jolter use <runtime>` | Complete | Installs or reuses a runtime, activates it, and installs shims. |
+| `jolter use <tool>` | Complete | Installs or reuses a runtime or package manager, activates it, and installs shims. Package managers require active Node.js. |
 | `jolter pin <runtime>` | Complete | Writes the runtime requirement to `jolter.json`. |
 | `jolter setup` | Complete | Installs shims and prints exact current-session and persistent `PATH` commands for PowerShell, Command Prompt, Bash, Zsh, and Fish. |
-| `jolter list` | Complete for current artifacts | Lists runtimes and managed package managers, active runtime markers, paths, and readiness. |
+| `jolter list` | Complete for current artifacts | Lists runtimes and managed package managers, active markers, paths, and readiness. |
 | `jolter doctor` | Complete for stable core | Probes versions, validates manifests and compatibility, detects conflicts, and emits remediation in text or JSON. |
 | `jolter repair` | Complete for current artifacts | Reinstalls incomplete runtime and package manager installations. |
 | `jolter sync` | Complete for current schema | Makes the runtime and package manager match project requirements. |
-| `jolter uninstall <tool@version>` | Complete | Removes exact versions with active-runtime protection and shared installer locks. |
+| `jolter uninstall <tool@version>` | Complete | Removes exact versions with active-toolchain protection and shared installer locks. |
 | `jolter prune` | Complete | Preserves active, project-required, and configured newest versions; supports dry runs. |
 | `jolter cache status/clean` | Complete | Inspects and safely cleans metadata and artifact caches. |
 | `jolter setup-ci` | Complete | Synchronizes exact versions, reports cache/shim paths, emits JSON, and integrates with GitHub Actions outputs. |
@@ -170,7 +172,8 @@ Status: **Complete for invocation-time switching**
 
 - Self-shims for `node`, `npm`, `npx`, `pnpm`, `yarn`, `bun`, and `deno`.
 - Runtime selection is evaluated whenever a shim runs.
-- Project requirements override globally active runtime versions.
+- Project requirements override globally active runtime and package manager
+  versions.
 - Managed package manager entry points run through the selected Node.js
   runtime.
 - No shell hook is required for command switching after the shims directory is
@@ -253,7 +256,7 @@ Implemented:
 - scheduled real-provider smoke installations
 - concurrent same-version installation regression coverage
 - bounded provider retry tests
-- measured line coverage of 83.48%
+- measured line coverage of 84.31%
 - CI enforcement of the 80% line-coverage target
 - dependency vulnerability auditing
 - tagged release archives and SHA-256 files
@@ -271,7 +274,7 @@ Remaining research:
 | Node.js management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
 | Bun management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
 | Deno management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
-| Package manager management | Complete for alpha | npm, pnpm, and Yarn are installed and dispatched with engine and optional Corepack hash validation. |
+| Package manager management | Complete for alpha | npm, pnpm, and Yarn are installed, globally activated, project-selected, and dispatched with engine and optional Corepack hash validation. |
 | Project pinning | Complete | Runtime pinning is implemented. |
 | Automatic switching | Complete for commands | Self-shims resolve the project on every invocation. |
 | Reproducible sync | Complete for current schema | Runtime and package manager selectors are synchronized. |
@@ -280,7 +283,7 @@ Remaining research:
 | Security requirements | Complete for current providers | HTTPS, integrity checks, bounded extraction, and no telemetry. |
 | Telemetry | Complete by absence | No telemetry is collected. Opt-in telemetry is not implemented. |
 | Cross-platform support | Release validation | Native and WSL workflows are configured; passing hosted runs are required before 1.0. |
-| 80% coverage target | Complete | Measured line coverage is 83.48% and CI fails below 80%. |
+| 80% coverage target | Complete | Measured line coverage is 84.31% and CI fails below 80%. |
 | Extended tools manifest | Future | Deferred until after the package manager core stabilizes. |
 | CI setup command | Planned | No implementation yet. |
 | Plugin system | Future | Architecture boundaries help, but no public plugin API exists. |
@@ -331,6 +334,7 @@ Delivered:
 - runtime source priority.
 - package manager source priority.
 - managed npm, pnpm, and Yarn installation.
+- manual package manager activation through `jolter use`.
 - SHA-512 npm package integrity.
 - Node-mediated package manager dispatch.
 - package manager sync, repair, and doctor reporting.
@@ -341,6 +345,8 @@ Exit criteria met:
 - `jolter sync` installs both layers.
 - running a generated package manager shim selects the project Node runtime and
   the matching managed package manager.
+- outside a project requirement, a generated package manager shim selects the
+  exact globally active managed version.
 - all downloads are integrity checked before publication.
 
 ### Milestone 3: Developer Experience and Diagnostics

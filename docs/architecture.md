@@ -26,7 +26,7 @@ Jolter is a Rust workspace split by responsibility:
 
 ## Package Manager Flow
 
-1. Resolve npm, pnpm, or Yarn from `jolter.json` or
+1. Resolve npm, pnpm, or Yarn from `jolter use`, `jolter.json`, or
    `package.json#packageManager`.
 2. Query abbreviated metadata from the official npm registry.
 3. Select the highest stable release matching the requested selector.
@@ -37,8 +37,9 @@ Jolter is a Rust workspace split by responsibility:
    same tarball.
 7. Extract and publish it atomically under
    `~/.jolter/tools/<manager>/<version>`.
-8. Dispatch its bundled JavaScript entry point through the Node.js runtime
-   selected for the project.
+8. Persist the exact active version for manual `use` and project sync flows.
+9. Dispatch its bundled JavaScript entry point through the selected Node.js
+   runtime.
 
 Locally reusable package-manager installations are checked against the
 selected Node.js version using their installed `package.json` metadata.
@@ -54,8 +55,9 @@ Each generated shim is the Jolter executable under a tool-specific file name.
 At startup, the CLI checks its invocation name before parsing commands.
 
 The shim resolves project requirements and chooses the highest complete local
-installation that matches. If the project has no matching requirement, it
-uses the exact globally active version.
+installation that matches. Project runtime and package manager requirements
+take priority. If the project has no matching requirement, the shim uses the
+exact globally active runtime or package manager version.
 
 ## Diagnostics and Inventory
 
@@ -70,9 +72,10 @@ one behavior path.
 ## Storage Lifecycle
 
 Exact-version uninstall and prune operations acquire the same installation
-locks as install and repair. Active runtimes are protected unless uninstall is
-explicitly forced. Prune protects active versions, versions required by the
-current project, and the configured number of newest complete versions.
+locks as install and repair. Active runtimes and package managers are protected
+unless uninstall is explicitly forced. Prune protects active versions,
+versions required by the current project, and the configured number of newest
+complete versions.
 
 Cache cleaning acquires an exclusive maintenance lock. Installation and repair
 hold a shared maintenance lock so verified archives cannot disappear while an

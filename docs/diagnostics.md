@@ -10,7 +10,7 @@ jolter list
 
 The command lists both runtime and managed package manager directories.
 
-- `*` marks the globally active exact runtime.
+- `*` marks a globally active exact runtime or package manager.
 - `ready` means the expected executable or package manager entry point exists.
 - `incomplete` means a version directory exists but its expected entry point
   is missing.

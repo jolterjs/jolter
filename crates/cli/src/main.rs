@@ -13,7 +13,7 @@ use clap_complete::{
 };
 use jolter_core::{Jolter, PruneOutcome, SyncOutcome};
 use jolter_doctor::CheckStatus;
-use jolter_runtime::{PackageManagerKind, RuntimeKind, RuntimeRequest};
+use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind, RuntimeRequest};
 use jolter_shim::{resolve_command, target_for_command};
 use jolter_storage::Storage;
 use semver::Version;
@@ -34,10 +34,11 @@ enum Command {
         #[arg(long, value_enum, default_value_t = SetupShell::Auto)]
         shell: SetupShell,
     },
-    /// Install and activate a runtime.
+    /// Install and activate a runtime or package manager.
     Use {
-        /// Runtime request, for example node@24.
-        runtime: RuntimeRequest,
+        /// Tool request, for example node@24 or pnpm@10.
+        #[arg(value_parser = parse_use_target)]
+        target: UseTarget,
     },
     /// Write a runtime requirement to jolter.json.
     Pin {
@@ -65,7 +66,7 @@ enum Command {
         /// Exact version to remove, for example node@24.1.0 or pnpm@10.2.0.
         #[arg(value_parser = parse_uninstall_target)]
         target: UninstallTarget,
-        /// Permit removal when the runtime is globally active.
+        /// Permit removal when the runtime or package manager is globally active.
         #[arg(long)]
         force: bool,
     },
@@ -120,6 +121,12 @@ enum UninstallTarget {
     PackageManager(PackageManagerKind, Version),
 }
 
+#[derive(Debug, Clone)]
+enum UseTarget {
+    Runtime(RuntimeRequest),
+    PackageManager(PackageManagerRequest),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum SetupShell {
     Auto,
@@ -160,22 +167,7 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             print_setup(&jolter, resolve_setup_shell(shell));
             Ok(ExitCode::SUCCESS)
         }
-        Command::Use { runtime } => {
-            let action = jolter.use_runtime(&runtime)?;
-            install_shims(&jolter)?;
-            let verb = if action.downloaded {
-                "Installed and activated"
-            } else {
-                "Activated"
-            };
-            println!(
-                "{verb} {}@{} at {}",
-                action.runtime.kind,
-                action.runtime.version,
-                action.runtime.path.display()
-            );
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Use { target } => run_use(&jolter, target),
         Command::Pin { runtime } => {
             jolter.pin(&current_dir, &runtime)?;
             println!(
@@ -216,6 +208,42 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
     }
 }
 
+fn run_use(jolter: &Jolter, target: UseTarget) -> Result<ExitCode, CliError> {
+    match target {
+        UseTarget::Runtime(request) => {
+            let action = jolter.use_runtime(&request)?;
+            install_shims(jolter)?;
+            let verb = if action.downloaded {
+                "Installed and activated"
+            } else {
+                "Activated"
+            };
+            println!(
+                "{verb} {}@{} at {}",
+                action.runtime.kind,
+                action.runtime.version,
+                action.runtime.path.display()
+            );
+        }
+        UseTarget::PackageManager(request) => {
+            let action = jolter.use_package_manager(&request)?;
+            install_shims(jolter)?;
+            let verb = if action.downloaded {
+                "Installed and activated"
+            } else {
+                "Activated"
+            };
+            println!(
+                "{verb} package manager {}@{} at {}",
+                action.tool.kind,
+                action.tool.version,
+                action.tool.path.display()
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run_uninstall(
     jolter: &Jolter,
     target: UninstallTarget,
@@ -227,7 +255,7 @@ fn run_uninstall(
             (kind.to_string(), version, outcome)
         }
         UninstallTarget::PackageManager(kind, version) => {
-            let outcome = jolter.uninstall_package_manager(kind, &version)?;
+            let outcome = jolter.uninstall_package_manager(kind, &version, force)?;
             (kind.to_string(), version, outcome)
         }
     };
@@ -316,8 +344,14 @@ fn print_inventory(jolter: &Jolter) -> Result<(), CliError> {
     if !tools.is_empty() {
         println!("Package managers:");
         for tool in tools {
+            let active = jolter.storage().active_tool_version(tool.kind)?;
+            let marker = if active.as_ref() == Some(&tool.version) {
+                "*"
+            } else {
+                " "
+            };
             println!(
-                "  {}@{} [{}]\t{}",
+                "{marker} {}@{} [{}]\t{}",
                 tool.kind,
                 tool.version,
                 installation_status(tool.is_complete()),
@@ -347,14 +381,16 @@ fn print_inventory_json(jolter: &Jolter) -> Result<(), CliError> {
         .list_tools()?
         .into_iter()
         .map(|tool| {
-            serde_json::json!({
+            let active = jolter.storage().active_tool_version(tool.kind)?;
+            Ok(serde_json::json!({
                 "kind": tool.kind.to_string(),
                 "version": tool.version.to_string(),
                 "path": tool.path,
                 "ready": tool.is_complete(),
-            })
+                "active": active.as_ref() == Some(&tool.version),
+            }))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, jolter_storage::StorageError>>()?;
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -688,6 +724,25 @@ fn print_completions(shell: CompletionShell) {
             generate(PowerShell, &mut command, name, &mut std::io::stdout());
         }
         CompletionShell::Zsh => generate(Zsh, &mut command, name, &mut std::io::stdout()),
+    }
+}
+
+fn parse_use_target(value: &str) -> Result<UseTarget, String> {
+    let (name, _) = value
+        .rsplit_once('@')
+        .ok_or_else(|| "expected <runtime-or-manager>@<version>".to_owned())?;
+    match name.to_ascii_lowercase().as_str() {
+        "node" | "nodejs" | "bun" | "deno" => value
+            .parse()
+            .map(UseTarget::Runtime)
+            .map_err(|error: jolter_runtime::RuntimeRequestError| error.to_string()),
+        "npm" | "pnpm" | "yarn" | "yarnpkg" => value
+            .parse()
+            .map(UseTarget::PackageManager)
+            .map_err(|error: jolter_runtime::PackageManagerRequestError| error.to_string()),
+        _ => Err(format!(
+            "unsupported tool `{name}`; expected node, bun, deno, npm, pnpm, or yarn"
+        )),
     }
 }
 

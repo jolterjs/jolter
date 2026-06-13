@@ -249,17 +249,11 @@ impl Storage {
     }
 
     pub fn activate(&self, kind: RuntimeKind, version: &Version) -> Result<(), StorageError> {
-        let path = self.config_dir().join("active.json");
-        let mut active = self.read_active_runtimes()?;
-        active
-            .versions
-            .insert(kind.to_string(), version.to_string());
-        let contents = serde_json::to_vec_pretty(&active).map_err(StorageError::SerializeActive)?;
-        atomic_write(&path, &contents)
+        self.write_active_version(kind.to_string(), version)
     }
 
     pub fn active_version(&self, kind: RuntimeKind) -> Result<Option<Version>, StorageError> {
-        let active = self.read_active_runtimes()?;
+        let active = self.read_active_versions()?;
         active
             .versions
             .get(&kind.to_string())
@@ -273,25 +267,74 @@ impl Storage {
             .transpose()
     }
 
+    pub fn activate_tool(
+        &self,
+        kind: PackageManagerKind,
+        version: &Version,
+    ) -> Result<(), StorageError> {
+        self.write_active_version(kind.to_string(), version)
+    }
+
+    pub fn active_tool_version(
+        &self,
+        kind: PackageManagerKind,
+    ) -> Result<Option<Version>, StorageError> {
+        let active = self.read_active_versions()?;
+        active
+            .versions
+            .get(&kind.to_string())
+            .map(|value| {
+                Version::parse(value).map_err(|source| StorageError::InvalidActiveToolVersion {
+                    kind,
+                    value: value.clone(),
+                    source,
+                })
+            })
+            .transpose()
+    }
+
     pub fn deactivate(
         &self,
         kind: RuntimeKind,
+        expected: Option<&Version>,
+    ) -> Result<bool, StorageError> {
+        self.remove_active_version(&kind.to_string(), expected)
+    }
+
+    pub fn deactivate_tool(
+        &self,
+        kind: PackageManagerKind,
+        expected: Option<&Version>,
+    ) -> Result<bool, StorageError> {
+        self.remove_active_version(&kind.to_string(), expected)
+    }
+
+    fn write_active_version(&self, key: String, version: &Version) -> Result<(), StorageError> {
+        let path = self.config_dir().join("active.json");
+        let mut active = self.read_active_versions()?;
+        active.versions.insert(key, version.to_string());
+        let contents = serde_json::to_vec_pretty(&active).map_err(StorageError::SerializeActive)?;
+        atomic_write(&path, &contents)
+    }
+
+    fn remove_active_version(
+        &self,
+        key: &str,
         expected: Option<&Version>,
     ) -> Result<bool, StorageError> {
         let path = self.config_dir().join("active.json");
         if !path.is_file() {
             return Ok(false);
         }
-        let mut active = self.read_active_runtimes()?;
-        let key = kind.to_string();
+        let mut active = self.read_active_versions()?;
         let should_remove = active
             .versions
-            .get(&key)
+            .get(key)
             .is_some_and(|value| expected.is_none_or(|version| value == &version.to_string()));
         if !should_remove {
             return Ok(false);
         }
-        active.versions.remove(&key);
+        active.versions.remove(key);
         let contents = serde_json::to_vec_pretty(&active).map_err(StorageError::SerializeActive)?;
         atomic_write(&path, &contents)?;
         Ok(true)
@@ -311,10 +354,10 @@ impl Storage {
         directory_stats(path)
     }
 
-    fn read_active_runtimes(&self) -> Result<ActiveRuntimes, StorageError> {
+    fn read_active_versions(&self) -> Result<ActiveVersions, StorageError> {
         let path = self.config_dir().join("active.json");
         if !path.is_file() {
-            return Ok(ActiveRuntimes::default());
+            return Ok(ActiveVersions::default());
         }
         let contents = fs::read_to_string(&path).map_err(|source| StorageError::ReadFile {
             path: path.clone(),
@@ -372,7 +415,7 @@ impl InstalledTool {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct ActiveRuntimes {
+struct ActiveVersions {
     #[serde(flatten)]
     versions: BTreeMap<String, String>,
 }
@@ -516,17 +559,24 @@ pub enum StorageError {
         #[source]
         source: std::io::Error,
     },
-    #[error("invalid active runtime configuration at {path}: {source}")]
+    #[error("invalid active toolchain configuration at {path}: {source}")]
     ParseActive {
         path: PathBuf,
         #[source]
         source: serde_json::Error,
     },
-    #[error("failed to serialize active runtime configuration: {0}")]
+    #[error("failed to serialize active toolchain configuration: {0}")]
     SerializeActive(#[source] serde_json::Error),
     #[error("active {kind} version `{value}` is invalid: {source}")]
     InvalidActiveVersion {
         kind: RuntimeKind,
+        value: String,
+        #[source]
+        source: semver::Error,
+    },
+    #[error("active {kind} package manager version `{value}` is invalid: {source}")]
+    InvalidActiveToolVersion {
+        kind: PackageManagerKind,
         value: String,
         #[source]
         source: semver::Error,
@@ -586,6 +636,46 @@ mod tests {
         assert_eq!(
             storage.active_version(RuntimeKind::Node).unwrap(),
             Some(Version::new(24, 3, 0))
+        );
+    }
+
+    #[test]
+    fn persists_active_package_manager_versions_alongside_runtimes() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+
+        storage
+            .activate(RuntimeKind::Node, &Version::new(24, 2, 0))
+            .unwrap();
+        storage
+            .activate_tool(PackageManagerKind::Pnpm, &Version::new(10, 2, 0))
+            .unwrap();
+
+        assert_eq!(
+            storage.active_version(RuntimeKind::Node).unwrap(),
+            Some(Version::new(24, 2, 0))
+        );
+        assert_eq!(
+            storage
+                .active_tool_version(PackageManagerKind::Pnpm)
+                .unwrap(),
+            Some(Version::new(10, 2, 0))
+        );
+        assert!(
+            storage
+                .deactivate_tool(PackageManagerKind::Pnpm, Some(&Version::new(10, 2, 0)))
+                .unwrap()
+        );
+        assert_eq!(
+            storage
+                .active_tool_version(PackageManagerKind::Pnpm)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage.active_version(RuntimeKind::Node).unwrap(),
+            Some(Version::new(24, 2, 0))
         );
     }
 

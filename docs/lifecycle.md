@@ -9,11 +9,12 @@ jolter uninstall node@24.1.0
 jolter uninstall pnpm@10.2.0
 ```
 
-An active runtime is protected. Activate another version first, or explicitly
-remove and deactivate it:
+An active runtime or package manager is protected. Activate another version
+first, or explicitly remove and deactivate it:
 
 ```bash
 jolter uninstall node@24.1.0 --force
+jolter uninstall pnpm@10.2.0 --force
 ```
 
 ## Prune

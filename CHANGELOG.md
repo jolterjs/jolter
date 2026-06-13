@@ -2,6 +2,7 @@
 
 ## 0.2.0 - 2026-06-13
 
+- allow `jolter use` to install and activate npm, pnpm, and Yarn versions
 - add exact-version uninstall, project-aware prune, and cache cleanup
 - add bounded runtime and package-manager version probing
 - add manifest, permission, engine, cache, proxy, and PATH precedence

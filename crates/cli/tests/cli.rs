@@ -42,6 +42,52 @@ fn pin_writes_project_configuration() {
 }
 
 #[test]
+fn use_activates_an_installed_package_manager() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let node = runtime_executable(home.path(), "node", "24.1.0");
+    fs::create_dir_all(node.parent().unwrap()).unwrap();
+    fs::write(node, b"node").unwrap();
+    let active = home.path().join("config").join("active.json");
+    fs::create_dir_all(active.parent().unwrap()).unwrap();
+    fs::write(&active, r#"{"node":"24.1.0"}"#).unwrap();
+    let pnpm = home
+        .path()
+        .join("tools")
+        .join("pnpm")
+        .join("10.2.0")
+        .join("bin")
+        .join("pnpm.cjs");
+    fs::create_dir_all(pnpm.parent().unwrap()).unwrap();
+    fs::write(pnpm, b"pnpm").unwrap();
+
+    let output = jolter_command(project.path(), home.path())
+        .args(["use", "pnpm@10"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Activated package manager pnpm@10.2.0")
+    );
+    let active: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(active).unwrap()).unwrap();
+    assert_eq!(active["node"], "24.1.0");
+    assert_eq!(active["pnpm"], "10.2.0");
+
+    let list = jolter_command(project.path(), home.path())
+        .arg("list")
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    assert!(String::from_utf8_lossy(&list.stdout).contains("* pnpm@10.2.0 [ready]"));
+}
+
+#[test]
 fn list_reports_installed_runtime_directories() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
@@ -513,6 +559,42 @@ fn uninstall_removes_an_exact_package_manager() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("Uninstalled pnpm@10.2.0"));
     assert!(!entrypoint.exists());
+}
+
+#[test]
+fn uninstall_protects_an_active_package_manager_without_force() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let entrypoint = home
+        .path()
+        .join("tools")
+        .join("pnpm")
+        .join("10.2.0")
+        .join("bin")
+        .join("pnpm.cjs");
+    fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+    fs::write(&entrypoint, b"pnpm").unwrap();
+    let active = home.path().join("config").join("active.json");
+    fs::create_dir_all(active.parent().unwrap()).unwrap();
+    fs::write(&active, r#"{"pnpm":"10.2.0"}"#).unwrap();
+
+    let refused = jolter_command(project.path(), home.path())
+        .args(["uninstall", "pnpm@10.2.0"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("active pnpm@10.2.0"));
+    assert!(entrypoint.exists());
+
+    let forced = jolter_command(project.path(), home.path())
+        .args(["uninstall", "pnpm@10.2.0", "--force"])
+        .output()
+        .unwrap();
+    assert!(forced.status.success());
+    assert!(!entrypoint.exists());
+    let active: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(active).unwrap()).unwrap();
+    assert!(active.get("pnpm").is_none());
 }
 
 #[test]

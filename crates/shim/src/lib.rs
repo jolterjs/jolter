@@ -4,8 +4,8 @@ use std::{
 };
 
 use jolter_resolver::resolve;
-use jolter_runtime::{PackageManagerRequest, RuntimeKind, RuntimeRequest};
-use jolter_storage::{InstalledRuntime, Storage};
+use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind, RuntimeRequest};
+use jolter_storage::{InstalledRuntime, InstalledTool, Storage};
 use semver::Version;
 use thiserror::Error;
 
@@ -67,13 +67,19 @@ pub fn resolve_command(
             Vec::new(),
         ),
         ShimTarget::NodeTool(command) => {
-            let managed = project_resolution
+            let project_tool = project_resolution
                 .package_manager
                 .filter(|resolved| resolved.request.kind.entrypoint(command).is_some());
-            if let Some(resolved) = managed {
-                let tool = storage
-                    .find_matching_tool(&resolved.request)?
-                    .ok_or_else(|| ShimError::ToolNotInstalled(resolved.request.clone()))?;
+            let managed_tool = if let Some(resolved) = project_tool {
+                Some(
+                    storage
+                        .find_matching_tool(&resolved.request)?
+                        .ok_or_else(|| ShimError::ToolNotInstalled(resolved.request.clone()))?,
+                )
+            } else {
+                active_tool_for_command(storage, command)?
+            };
+            if let Some(tool) = managed_tool {
                 let entrypoint = storage
                     .tool_entrypoint(tool.kind, &tool.version, command)
                     .ok_or_else(|| ShimError::ExecutableNotFound {
@@ -111,6 +117,35 @@ pub fn resolve_command(
         runtime_root: runtime.path.clone(),
         runtime,
     })
+}
+
+fn active_tool_for_command(
+    storage: &Storage,
+    command: &str,
+) -> Result<Option<InstalledTool>, ShimError> {
+    let Some(kind) = PackageManagerKind::ALL
+        .into_iter()
+        .find(|kind| kind.entrypoint(command).is_some())
+    else {
+        return Ok(None);
+    };
+    let Some(version) = storage.active_tool_version(kind)? else {
+        return Ok(None);
+    };
+    let path = storage.tool_version_dir(kind, &version);
+    let tool = InstalledTool {
+        kind,
+        version,
+        path,
+    };
+    if !tool.is_complete() {
+        return Err(ShimError::ActiveToolMissing {
+            kind: tool.kind,
+            version: tool.version,
+            path: tool.path,
+        });
+    }
+    Ok(Some(tool))
 }
 
 pub fn install_shims(
@@ -203,6 +238,12 @@ pub enum ShimError {
         version: Version,
         path: PathBuf,
     },
+    #[error("active {kind}@{version} package manager is missing from {path}")]
+    ActiveToolMissing {
+        kind: PackageManagerKind,
+        version: Version,
+        path: PathBuf,
+    },
     #[error("command `{command}` was not found at {path}")]
     ExecutableNotFound { command: String, path: PathBuf },
     #[error("Jolter executable was not found at {0}")]
@@ -292,6 +333,69 @@ mod tests {
 
         assert_eq!(resolved.executable, node);
         assert_eq!(resolved.arguments, vec![pnpm]);
+    }
+
+    #[test]
+    fn resolves_active_package_manager_through_active_node() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+        let node_version = Version::new(24, 1, 0);
+        let node = storage.runtime_executable(RuntimeKind::Node, &node_version);
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(&node, b"node").unwrap();
+        storage.activate(RuntimeKind::Node, &node_version).unwrap();
+        let pnpm_version = Version::new(10, 2, 0);
+        let pnpm = storage
+            .tool_entrypoint(PackageManagerKind::Pnpm, &pnpm_version, "pnpm")
+            .unwrap();
+        fs::create_dir_all(pnpm.parent().unwrap()).unwrap();
+        fs::write(&pnpm, b"pnpm").unwrap();
+        storage
+            .activate_tool(PackageManagerKind::Pnpm, &pnpm_version)
+            .unwrap();
+
+        let resolved = resolve_command("pnpm", project.path(), &storage).unwrap();
+
+        assert_eq!(resolved.executable, node);
+        assert_eq!(resolved.arguments, vec![pnpm]);
+    }
+
+    #[test]
+    fn project_package_manager_overrides_the_active_version() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+        fs::write(
+            project.path().join("jolter.json"),
+            r#"{"runtime":{"node":"24"},"packageManager":{"pnpm":"10"}}"#,
+        )
+        .unwrap();
+        let node_version = Version::new(24, 1, 0);
+        let node = storage.runtime_executable(RuntimeKind::Node, &node_version);
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(node, b"node").unwrap();
+        let active_version = Version::new(9, 1, 0);
+        let active = storage
+            .tool_entrypoint(PackageManagerKind::Pnpm, &active_version, "pnpm")
+            .unwrap();
+        fs::create_dir_all(active.parent().unwrap()).unwrap();
+        fs::write(active, b"pnpm").unwrap();
+        storage
+            .activate_tool(PackageManagerKind::Pnpm, &active_version)
+            .unwrap();
+        let project_version = Version::new(10, 2, 0);
+        let project_pnpm = storage
+            .tool_entrypoint(PackageManagerKind::Pnpm, &project_version, "pnpm")
+            .unwrap();
+        fs::create_dir_all(project_pnpm.parent().unwrap()).unwrap();
+        fs::write(&project_pnpm, b"pnpm").unwrap();
+
+        let resolved = resolve_command("pnpm", project.path(), &storage).unwrap();
+
+        assert_eq!(resolved.arguments, vec![project_pnpm]);
     }
 
     #[test]

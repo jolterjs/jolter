@@ -56,6 +56,21 @@ impl Jolter {
         self.ensure_runtime(request, false)
     }
 
+    pub fn use_package_manager(
+        &self,
+        request: &PackageManagerRequest,
+    ) -> Result<PackageManagerAction, CoreError> {
+        let node_version = self.active_node_version(request)?;
+        let outcome = self.ensure_package_manager(request, &node_version, false)?;
+        self.storage
+            .activate_tool(outcome.tool.kind, &outcome.tool.version)?;
+        Ok(PackageManagerAction {
+            request: request.clone(),
+            tool: outcome.tool,
+            downloaded: outcome.downloaded,
+        })
+    }
+
     pub fn list(&self) -> Result<Vec<InstalledRuntime>, CoreError> {
         Ok(self.storage.installed_runtimes()?)
     }
@@ -100,8 +115,20 @@ impl Jolter {
         &self,
         kind: PackageManagerKind,
         version: &Version,
+        force: bool,
     ) -> Result<RemovalOutcome, CoreError> {
-        Ok(self.installer.uninstall_package_manager(kind, version)?)
+        let active = self.storage.active_tool_version(kind)?;
+        if active.as_ref() == Some(version) && !force {
+            return Err(CoreError::ActivePackageManagerRemoval {
+                kind,
+                version: version.clone(),
+            });
+        }
+        let outcome = self.installer.uninstall_package_manager(kind, version)?;
+        if active.as_ref() == Some(version) {
+            self.storage.deactivate_tool(kind, Some(version))?;
+        }
+        Ok(outcome)
     }
 
     pub fn prune(
@@ -136,6 +163,9 @@ impl Jolter {
         }
 
         for kind in PackageManagerKind::ALL {
+            if let Some(version) = self.storage.active_tool_version(kind)? {
+                protected_tools.insert((kind, version));
+            }
             protected_tools.extend(
                 tools
                     .iter()
@@ -221,6 +251,8 @@ impl Jolter {
                     &action.runtime.version,
                     repair,
                 )?;
+                self.storage
+                    .activate_tool(tool.tool.kind, &tool.tool.version)?;
                 Ok(PackageManagerAction {
                     request: resolved.request,
                     tool: tool.tool,
@@ -286,6 +318,24 @@ impl Jolter {
                 .installer
                 .install_package_manager(request, node_version)?)
         }
+    }
+
+    fn active_node_version(&self, request: &PackageManagerRequest) -> Result<Version, CoreError> {
+        let version = self
+            .storage
+            .active_version(RuntimeKind::Node)?
+            .ok_or_else(|| CoreError::PackageManagerRequiresActiveNode(request.clone()))?;
+        let path = self
+            .storage
+            .runtime_version_dir(RuntimeKind::Node, &version);
+        if !self
+            .storage
+            .runtime_executable(RuntimeKind::Node, &version)
+            .is_file()
+        {
+            return Err(CoreError::ActiveNodeRuntimeMissing { version, path });
+        }
+        Ok(version)
     }
 }
 
@@ -361,9 +411,22 @@ pub enum CoreError {
     #[error("package manager {0} requires a Node.js runtime")]
     PackageManagerRequiresNode(PackageManagerRequest),
     #[error(
+        "package manager {0} requires an active Node.js runtime; run `jolter use node@<version>` first"
+    )]
+    PackageManagerRequiresActiveNode(PackageManagerRequest),
+    #[error("active node@{version} runtime is missing from {path}")]
+    ActiveNodeRuntimeMissing { version: Version, path: PathBuf },
+    #[error(
         "refusing to uninstall active {kind}@{version}; activate another version or pass --force"
     )]
     ActiveRuntimeRemoval { kind: RuntimeKind, version: Version },
+    #[error(
+        "refusing to uninstall active {kind}@{version}; activate another version or pass --force"
+    )]
+    ActivePackageManagerRemoval {
+        kind: PackageManagerKind,
+        version: Version,
+    },
     #[error(transparent)]
     Config(#[from] jolter_config::ConfigError),
     #[error(transparent)]
@@ -456,11 +519,63 @@ mod tests {
             .unwrap();
         fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
         fs::write(entrypoint, b"pnpm").unwrap();
-        let jolter = Jolter::with_storage(storage).unwrap();
+        let jolter = Jolter::with_storage(storage.clone()).unwrap();
 
         let outcome = jolter.sync(project.path()).unwrap();
 
         assert_eq!(outcome.package_manager.unwrap().tool.version, tool_version);
+        assert_eq!(
+            storage
+                .active_tool_version(PackageManagerKind::Pnpm)
+                .unwrap(),
+            Some(tool_version)
+        );
+    }
+
+    #[test]
+    fn use_reuses_and_activates_a_package_manager_with_active_node() {
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        let node_version = semver::Version::new(24, 1, 0);
+        let node = storage.runtime_executable(RuntimeKind::Node, &node_version);
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(node, b"node").unwrap();
+        storage.activate(RuntimeKind::Node, &node_version).unwrap();
+        let tool_version = semver::Version::new(10, 2, 0);
+        let entrypoint = storage
+            .tool_entrypoint(PackageManagerKind::Pnpm, &tool_version, "pnpm")
+            .unwrap();
+        fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        fs::write(entrypoint, b"pnpm").unwrap();
+        let jolter = Jolter::with_storage(storage.clone()).unwrap();
+
+        let action = jolter
+            .use_package_manager(&"pnpm@10".parse().unwrap())
+            .unwrap();
+
+        assert_eq!(action.tool.version, tool_version);
+        assert!(!action.downloaded);
+        assert_eq!(
+            storage
+                .active_tool_version(PackageManagerKind::Pnpm)
+                .unwrap(),
+            Some(tool_version)
+        );
+    }
+
+    #[test]
+    fn use_package_manager_requires_an_active_node_runtime() {
+        let storage_temp = tempfile::tempdir().unwrap();
+        let jolter = Jolter::with_storage(Storage::new(storage_temp.path())).unwrap();
+
+        let error = jolter
+            .use_package_manager(&"pnpm@10".parse().unwrap())
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoreError::PackageManagerRequiresActiveNode(_)
+        ));
     }
 
     #[test]
@@ -577,5 +692,54 @@ mod tests {
         );
         assert!(!executable.exists());
         assert!(jolter.clean_cache().unwrap().removed_files > 0);
+    }
+
+    #[test]
+    fn active_package_managers_are_protected_from_prune_and_uninstall() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(
+            project.path().join(CONFIG_FILE_NAME),
+            r#"{"runtime":{"node":"24"}}"#,
+        )
+        .unwrap();
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        storage.ensure_layout().unwrap();
+        let node_version = semver::Version::new(24, 1, 0);
+        let node = storage.runtime_executable(RuntimeKind::Node, &node_version);
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(node, b"node").unwrap();
+        for version in [
+            semver::Version::new(9, 1, 0),
+            semver::Version::new(10, 2, 0),
+        ] {
+            let entrypoint = storage
+                .tool_entrypoint(PackageManagerKind::Pnpm, &version, "pnpm")
+                .unwrap();
+            fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+            fs::write(entrypoint, b"pnpm").unwrap();
+        }
+        let active = semver::Version::new(9, 1, 0);
+        storage
+            .activate_tool(PackageManagerKind::Pnpm, &active)
+            .unwrap();
+        let jolter = Jolter::with_storage(storage.clone()).unwrap();
+
+        let preview = jolter.prune(project.path(), 0, true).unwrap();
+        assert_eq!(preview.removed.len(), 1);
+        assert_eq!(preview.removed[0].version, semver::Version::new(10, 2, 0));
+        assert!(matches!(
+            jolter.uninstall_package_manager(PackageManagerKind::Pnpm, &active, false),
+            Err(CoreError::ActivePackageManagerRemoval { .. })
+        ));
+        jolter
+            .uninstall_package_manager(PackageManagerKind::Pnpm, &active, true)
+            .unwrap();
+        assert_eq!(
+            storage
+                .active_tool_version(PackageManagerKind::Pnpm)
+                .unwrap(),
+            None
+        );
     }
 }

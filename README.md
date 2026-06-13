@@ -18,6 +18,7 @@ passed through a release-candidate period.
 - pin project requirements in `jolter.json`
 - resolve `.node-version`, `.nvmrc`, and `package.json#packageManager`
 - install verified npm, pnpm, and Yarn versions from the npm registry
+- manually activate npm, pnpm, and Yarn versions through `jolter use`
 - accept exact Corepack descriptors with SHA-1 or SHA-2 hashes
 - validate package-manager Node.js engine requirements before installation
 - automatically select project runtimes through self-shims
@@ -54,6 +55,14 @@ jolter use node@24
 jolter use node@lts
 jolter use bun@1.3
 jolter use deno@2
+```
+
+Install and activate a package manager using the active Node.js runtime:
+
+```bash
+jolter use npm@11
+jolter use pnpm@10
+jolter use yarn@4
 ```
 
 Pin and synchronize a project:
@@ -126,11 +135,12 @@ See [shell setup](docs/setup.md) for supported shells and persistence behavior.
 ```
 
 Package-manager requirements for npm, pnpm, and Yarn are installed into
-`~/.jolter/tools` and selected by the generated shims. Jolter verifies npm
-registry packages with their SHA-512 integrity metadata and checks the
-additional hash when `packageManager` uses an exact Corepack descriptor such
-as `pnpm@10.12.1+sha224.<hash>`. The selected package manager must also support
-the project's selected Node.js version according to its `engines.node` range.
+`~/.jolter/tools` and selected by the generated shims. A project requirement
+has priority over a globally active version selected with `jolter use`. Jolter
+verifies npm registry packages with their SHA-512 integrity metadata and checks
+the additional hash when `packageManager` uses an exact Corepack descriptor
+such as `pnpm@10.12.1+sha224.<hash>`. The selected package manager must also
+support the selected Node.js version according to its `engines.node` range.
 
 ## Environment
 
