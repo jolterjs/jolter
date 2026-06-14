@@ -4,7 +4,7 @@ use std::{
 };
 
 use jolter_resolver::resolve;
-use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind, RuntimeRequest};
+use jolter_runtime::{RuntimeKind, RuntimeRequest, ToolKind, ToolRequest};
 use jolter_storage::{InstalledRuntime, InstalledTool, Storage};
 use semver::Version;
 use thiserror::Error;
@@ -68,8 +68,9 @@ pub fn resolve_command(
         ),
         ShimTarget::NodeTool(command) => {
             let project_tool = project_resolution
-                .package_manager
-                .filter(|resolved| resolved.request.kind.entrypoint(command).is_some());
+                .tools
+                .into_iter()
+                .find(|resolved| resolved.request.kind.entrypoint(command).is_some());
             let managed_tool = if let Some(resolved) = project_tool {
                 Some(
                     storage
@@ -123,7 +124,7 @@ fn active_tool_for_command(
     storage: &Storage,
     command: &str,
 ) -> Result<Option<InstalledTool>, ShimError> {
-    let Some(kind) = PackageManagerKind::ALL
+    let Some(kind) = ToolKind::ALL
         .into_iter()
         .find(|kind| kind.entrypoint(command).is_some())
     else {
@@ -228,8 +229,8 @@ pub enum ShimError {
     UnsupportedCommand(String),
     #[error("runtime required by the project is not installed: {0}")]
     RuntimeNotInstalled(RuntimeRequest),
-    #[error("package manager required by the project is not installed: {0}")]
-    ToolNotInstalled(PackageManagerRequest),
+    #[error("tool required by the project is not installed: {0}")]
+    ToolNotInstalled(ToolRequest),
     #[error("no active {0} runtime; run `jolter use {0}@<version>`")]
     NoActiveRuntime(RuntimeKind),
     #[error("active {kind}@{version} runtime is missing from {path}")]
@@ -238,9 +239,9 @@ pub enum ShimError {
         version: Version,
         path: PathBuf,
     },
-    #[error("active {kind}@{version} package manager is missing from {path}")]
+    #[error("active {kind}@{version} tool is missing from {path}")]
     ActiveToolMissing {
-        kind: PackageManagerKind,
+        kind: ToolKind,
         version: Version,
         path: PathBuf,
     },
@@ -304,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_managed_package_manager_through_project_node() {
+    fn resolves_managed_tool_through_project_node() {
         let project = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let storage = Storage::new(home.path());
@@ -320,11 +321,7 @@ mod tests {
         fs::write(&node, b"node").unwrap();
         let pnpm_version = Version::new(10, 2, 0);
         let pnpm = storage
-            .tool_entrypoint(
-                jolter_runtime::PackageManagerKind::Pnpm,
-                &pnpm_version,
-                "pnpm",
-            )
+            .tool_entrypoint(jolter_runtime::ToolKind::Pnpm, &pnpm_version, "pnpm")
             .unwrap();
         fs::create_dir_all(pnpm.parent().unwrap()).unwrap();
         fs::write(&pnpm, b"pnpm").unwrap();
@@ -336,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_active_package_manager_through_active_node() {
+    fn resolves_active_tool_through_active_node() {
         let project = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let storage = Storage::new(home.path());
@@ -348,12 +345,12 @@ mod tests {
         storage.activate(RuntimeKind::Node, &node_version).unwrap();
         let pnpm_version = Version::new(10, 2, 0);
         let pnpm = storage
-            .tool_entrypoint(PackageManagerKind::Pnpm, &pnpm_version, "pnpm")
+            .tool_entrypoint(ToolKind::Pnpm, &pnpm_version, "pnpm")
             .unwrap();
         fs::create_dir_all(pnpm.parent().unwrap()).unwrap();
         fs::write(&pnpm, b"pnpm").unwrap();
         storage
-            .activate_tool(PackageManagerKind::Pnpm, &pnpm_version)
+            .activate_tool(ToolKind::Pnpm, &pnpm_version)
             .unwrap();
 
         let resolved = resolve_command("pnpm", project.path(), &storage).unwrap();
@@ -363,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn project_package_manager_overrides_the_active_version() {
+    fn project_tool_overrides_the_active_version() {
         let project = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let storage = Storage::new(home.path());
@@ -379,16 +376,16 @@ mod tests {
         fs::write(node, b"node").unwrap();
         let active_version = Version::new(9, 1, 0);
         let active = storage
-            .tool_entrypoint(PackageManagerKind::Pnpm, &active_version, "pnpm")
+            .tool_entrypoint(ToolKind::Pnpm, &active_version, "pnpm")
             .unwrap();
         fs::create_dir_all(active.parent().unwrap()).unwrap();
         fs::write(active, b"pnpm").unwrap();
         storage
-            .activate_tool(PackageManagerKind::Pnpm, &active_version)
+            .activate_tool(ToolKind::Pnpm, &active_version)
             .unwrap();
         let project_version = Version::new(10, 2, 0);
         let project_pnpm = storage
-            .tool_entrypoint(PackageManagerKind::Pnpm, &project_version, "pnpm")
+            .tool_entrypoint(ToolKind::Pnpm, &project_version, "pnpm")
             .unwrap();
         fs::create_dir_all(project_pnpm.parent().unwrap()).unwrap();
         fs::write(&project_pnpm, b"pnpm").unwrap();

@@ -8,7 +8,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use jolter_resolver::{ProjectResolution, ResolvedPackageManager, resolve};
+use jolter_resolver::{ProjectResolution, ResolvedTool, resolve};
 use jolter_runtime::RuntimeKind;
 use jolter_shim::SHIM_COMMANDS;
 use jolter_storage::{InstalledRuntime, InstalledTool, Storage};
@@ -117,7 +117,7 @@ pub fn examine(project: &Path, storage: &Storage) -> Result<Report, DoctorError>
 
     if let Some(resolution) = resolution.as_ref() {
         let matching_runtime = runtime_checks(storage, resolution, &mut checks)?;
-        package_manager_checks(storage, resolution, matching_runtime.as_ref(), &mut checks)?;
+        tool_checks(storage, resolution, matching_runtime.as_ref(), &mut checks)?;
     } else {
         checks.push(Check::warning(
             "runtime",
@@ -125,8 +125,8 @@ pub fn examine(project: &Path, storage: &Storage) -> Result<Report, DoctorError>
             "fix the configuration check first",
         ));
         checks.push(Check::warning(
-            "package manager",
-            "package manager health was not evaluated because project configuration is invalid",
+            "tools",
+            "tool health was not evaluated because project configuration is invalid",
             "fix the configuration check first",
         ));
     }
@@ -184,58 +184,60 @@ fn runtime_checks(
     Ok(Some(candidate))
 }
 
-fn package_manager_checks(
+fn tool_checks(
     storage: &Storage,
     resolution: &ProjectResolution,
     runtime: Option<&InstalledRuntime>,
     checks: &mut Vec<Check>,
 ) -> Result<(), DoctorError> {
-    let Some(package_manager) = resolution.package_manager.as_ref() else {
+    if resolution.tools.is_empty() {
         checks.push(Check::warning(
-            "package manager",
-            "no package manager requirement was found",
-            "add packageManager to jolter.json or package.json when deterministic tooling is needed",
+            "tools",
+            "no tool requirement was found",
+            "add tools to jolter.json when deterministic tooling is needed",
         ));
         return Ok(());
-    };
-    let Some(runtime) = runtime.filter(|runtime| runtime.kind == RuntimeKind::Node) else {
-        checks.push(Check::fail(
-            "package manager",
-            format!(
-                "{}@{} requires an installed Node.js runtime",
-                package_manager.request.kind, package_manager.request.selector
-            ),
-            "configure a Node.js runtime and run `jolter sync`",
-        ));
-        return Ok(());
-    };
-    let Some(tool) = storage.find_matching_tool(&package_manager.request)? else {
-        checks.push(Check::fail(
-            "package manager",
-            format!(
-                "{} is configured but no matching managed installation exists",
-                package_manager.request
-            ),
-            "run `jolter sync` to install the required package manager",
-        ));
-        return Ok(());
-    };
+    }
+    for resolved in &resolution.tools {
+        let Some(runtime) = runtime.filter(|runtime| runtime.kind == RuntimeKind::Node) else {
+            checks.push(Check::fail(
+                "tool",
+                format!(
+                    "{}@{} requires an installed Node.js runtime",
+                    resolved.request.kind, resolved.request.selector
+                ),
+                "configure a Node.js runtime and run `jolter sync`",
+            ));
+            continue;
+        };
+        let Some(tool) = storage.find_matching_tool(&resolved.request)? else {
+            checks.push(Check::fail(
+                "tool",
+                format!(
+                    "{} is configured but no matching managed installation exists",
+                    resolved.request
+                ),
+                "run `jolter sync` to install the required tool",
+            ));
+            continue;
+        };
 
-    checks.push(Check::pass(
-        "package manager",
-        format!(
-            "{} is satisfied by {}@{}",
-            package_manager.request, tool.kind, tool.version
-        ),
-    ));
-    checks.push(tool_manifest_check(&tool));
-    checks.push(package_manager_engine_check(&tool, &runtime.version));
-    checks.push(version_probe_check(
-        "package manager version",
-        package_manager_probe_command(storage, runtime, &tool, package_manager),
-        &tool.version,
-        "run `jolter repair` to replace the package manager installation",
-    ));
+        checks.push(Check::pass(
+            "tool",
+            format!(
+                "{} is satisfied by {}@{}",
+                resolved.request, tool.kind, tool.version
+            ),
+        ));
+        checks.push(tool_manifest_check(&tool));
+        checks.push(tool_engine_check(&tool, &runtime.version));
+        checks.push(version_probe_check(
+            "tool version",
+            tool_probe_command(storage, runtime, &tool, resolved),
+            &tool.version,
+            "run `jolter repair` to replace the tool installation",
+        ));
+    }
     Ok(())
 }
 
@@ -329,14 +331,14 @@ fn tool_manifest_check(tool: &InstalledTool) -> Check {
         Ok(manifest) => manifest,
         Err(ManifestRead::Missing) => {
             return Check::warning(
-                "package manager manifest",
+                "tool manifest",
                 format!("installation manifest is missing at {}", path.display()),
                 "run `jolter repair` to recreate a verified installation",
             );
         }
         Err(ManifestRead::Invalid(error)) => {
             return Check::fail(
-                "package manager manifest",
+                "tool manifest",
                 format!(
                     "invalid installation manifest at {}: {error}",
                     path.display()
@@ -345,12 +347,12 @@ fn tool_manifest_check(tool: &InstalledTool) -> Check {
             );
         }
     };
-    if manifest.package_manager != tool.kind.to_string()
+    if manifest.tool != tool.kind.to_string()
         || manifest.version != tool.version.to_string()
         || !valid_manifest_artifact(&manifest.artifact_url, &manifest.integrity)
     {
         return Check::fail(
-            "package manager manifest",
+            "tool manifest",
             format!(
                 "manifest identity or integrity metadata does not match {}@{}",
                 tool.kind, tool.version
@@ -359,7 +361,7 @@ fn tool_manifest_check(tool: &InstalledTool) -> Check {
         );
     }
     Check::pass(
-        "package manager manifest",
+        "tool manifest",
         format!("verified metadata is present at {}", path.display()),
     )
 }
@@ -406,7 +408,7 @@ fn runtime_permission_check(_runtime: &InstalledRuntime) -> Check {
     )
 }
 
-fn package_manager_engine_check(tool: &InstalledTool, node_version: &Version) -> Check {
+fn tool_engine_check(tool: &InstalledTool, node_version: &Version) -> Check {
     let path = tool.path.join("package.json");
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
@@ -414,7 +416,7 @@ fn package_manager_engine_check(tool: &InstalledTool, node_version: &Version) ->
             return Check::warning(
                 "Node.js compatibility",
                 format!("package metadata is missing at {}", path.display()),
-                "run `jolter repair` to recreate the managed package manager",
+                "run `jolter repair` to recreate the managed tool",
             );
         }
         Err(error) => {
@@ -431,7 +433,7 @@ fn package_manager_engine_check(tool: &InstalledTool, node_version: &Version) ->
             return Check::fail(
                 "Node.js compatibility",
                 format!("invalid package metadata at {}: {error}", path.display()),
-                "run `jolter repair` to replace the package manager",
+                "run `jolter repair` to replace the tool",
             );
         }
     };
@@ -478,7 +480,7 @@ fn package_manager_engine_check(tool: &InstalledTool, node_version: &Version) ->
                 "{}@{} requires Node.js `{requirement}`, but node@{} is selected",
                 tool.kind, tool.version, node_version
             ),
-            "pin a compatible Node.js or package manager version, then run `jolter sync`",
+            "pin a compatible Node.js or tool version, then run `jolter sync`",
         )
     }
 }
@@ -489,11 +491,11 @@ fn runtime_probe_command(runtime: &InstalledRuntime) -> Command {
     command
 }
 
-fn package_manager_probe_command(
+fn tool_probe_command(
     storage: &Storage,
     runtime: &InstalledRuntime,
     tool: &InstalledTool,
-    requirement: &ResolvedPackageManager,
+    requirement: &ResolvedTool,
 ) -> Command {
     let mut command = Command::new(runtime.executable());
     if let Some(entrypoint) = storage.tool_entrypoint(
@@ -898,7 +900,8 @@ struct RuntimeManifest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ToolManifest {
-    package_manager: String,
+    #[serde(alias = "packageManager")]
+    tool: String,
     version: String,
     artifact_url: String,
     integrity: String,
@@ -946,13 +949,13 @@ pub enum DoctorError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jolter_runtime::PackageManagerKind;
+    use jolter_runtime::ToolKind;
 
     #[cfg(not(windows))]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn reports_a_matching_managed_package_manager_as_healthy() {
+    fn reports_a_matching_managed_tool_as_healthy() {
         let project = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let storage = Storage::new(home.path());
@@ -966,7 +969,7 @@ mod tests {
         fs::create_dir_all(node.parent().unwrap()).unwrap();
         fs::write(node, b"node").unwrap();
         let pnpm = storage
-            .tool_entrypoint(PackageManagerKind::Pnpm, &Version::new(10, 2, 0), "pnpm")
+            .tool_entrypoint(ToolKind::Pnpm, &Version::new(10, 2, 0), "pnpm")
             .unwrap();
         fs::create_dir_all(pnpm.parent().unwrap()).unwrap();
         fs::write(pnpm, b"pnpm").unwrap();
@@ -975,7 +978,7 @@ mod tests {
         let check = report
             .checks
             .iter()
-            .find(|check| check.name == "package manager")
+            .find(|check| check.name == "tool")
             .unwrap();
 
         assert_eq!(check.status, CheckStatus::Pass);
@@ -1059,9 +1062,9 @@ mod tests {
         assert_eq!(runtime_manifest_check(&runtime).status, CheckStatus::Pass);
 
         let tool = InstalledTool {
-            kind: PackageManagerKind::Pnpm,
+            kind: ToolKind::Pnpm,
             version: Version::new(10, 2, 0),
-            path: storage.tool_version_dir(PackageManagerKind::Pnpm, &Version::new(10, 2, 0)),
+            path: storage.tool_version_dir(ToolKind::Pnpm, &Version::new(10, 2, 0)),
         };
         fs::create_dir_all(&tool.path).unwrap();
         let integrity = format!("sha512-{}", BASE64.encode([0_u8; 64]));
@@ -1088,10 +1091,10 @@ mod tests {
     }
 
     #[test]
-    fn diagnoses_package_manager_engine_metadata() {
+    fn diagnoses_tool_engine_metadata() {
         let home = tempfile::tempdir().unwrap();
         let tool = InstalledTool {
-            kind: PackageManagerKind::Pnpm,
+            kind: ToolKind::Pnpm,
             version: Version::new(10, 2, 0),
             path: home.path().join("pnpm"),
         };
@@ -1103,11 +1106,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            package_manager_engine_check(&tool, &Version::new(22, 1, 0)).status,
+            tool_engine_check(&tool, &Version::new(22, 1, 0)).status,
             CheckStatus::Pass
         );
         assert_eq!(
-            package_manager_engine_check(&tool, &Version::new(21, 0, 0)).status,
+            tool_engine_check(&tool, &Version::new(21, 0, 0)).status,
             CheckStatus::Fail
         );
 
@@ -1117,13 +1120,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            package_manager_engine_check(&tool, &Version::new(22, 1, 0)).status,
+            tool_engine_check(&tool, &Version::new(22, 1, 0)).status,
             CheckStatus::Fail
         );
 
         fs::write(tool.path.join("package.json"), "{}").unwrap();
         assert_eq!(
-            package_manager_engine_check(&tool, &Version::new(22, 1, 0)).status,
+            tool_engine_check(&tool, &Version::new(22, 1, 0)).status,
             CheckStatus::Pass
         );
     }

@@ -1,109 +1,217 @@
 # Architecture
 
-Jolter is a Rust workspace split by responsibility:
+Jolter is a native Rust CLI with no resident daemon. It combines project
+requirement resolution, verified installation, filesystem-backed activation,
+and command shims in one workspace.
 
-- `cli`: command parsing, shell onboarding, output, and self-shim dispatch
-- `core`: orchestration for use, pin, sync, repair, removal, pruning, and diagnostics
-- `config`: strict `jolter.json` parsing and atomic writes
-- `runtime`: runtime names and version-selector semantics
-- `installer`: release providers, HTTPS downloads, checksums, and extraction
-- `resolver`: project requirement discovery and source priority
-- `shim`: shim generation and command-to-installation resolution
-- `doctor`: non-destructive environment diagnostics
-- `storage`: global layout, installed versions, and active selections
+## Design Principles
 
-## Output Flow
+- Project declarations are portable and belong in source control.
+- Installed toolchains are rebuildable machine state.
+- Network artifacts remain untrusted until verified.
+- Publication is atomic and exact-version operations are lock-coordinated.
+- Shims resolve on command invocation; directory changes need no shell hook.
+- Human output and machine output share behavior but not presentation.
+- Diagnostics are non-destructive and provide remediation where possible.
 
-Core and installer operations emit structured progress events instead of
-writing directly to a terminal. Events cover selection, resolution, cache
-reuse, connection, byte transfer, verification, extraction, publication,
-activation, removal, cleanup, diagnostics, configuration, and shim refresh.
+## Workspace Boundaries
 
-The CLI renderer owns presentation:
+| Crate | Owns |
+| --- | --- |
+| `cli` | Argument parsing, output rendering, shell instructions, CI adaptation, completions, and process launch. |
+| `core` | Orchestration for use, pin, update, sync, repair, lifecycle, and diagnostics. |
+| `config` | Strict project schema, upward discovery, validation, and atomic writes. |
+| `runtime` | Runtime/tool identifiers, request parsing, selectors, and hashes. |
+| `installer` | Provider metadata, HTTP, retry, cache, integrity, extraction, locking, and publication. |
+| `resolver` | Project-source precedence and normalized requirements. |
+| `shim` | Shim generation and command-to-installation selection. |
+| `doctor` | Storage, project, installation, command-routing, network, and cache checks. |
+| `storage` | Directory layout, inventory, active selections, and filesystem statistics. |
 
-- interactive terminals redraw one compact status line on standard error;
-- CI and non-terminal streams receive deterministic line-oriented events;
-- ANSI styling is limited to terminal hosts that advertise color support,
-  including an automatic plain-text fallback for legacy Windows consoles;
-- structured list rows are width-aligned by the renderer without tab stops;
-- JSON and completion commands suppress decorative events;
-- final command results remain on standard output.
+Dependencies point toward domain types and storage rather than terminal
+presentation. Installer and core operations emit progress events through a
+reporter interface instead of printing directly.
 
-This separation keeps installer behavior testable and allows future output
-formats without coupling provider code to terminal escape sequences.
+## Command Flow
 
-## Runtime Flow
+A normal CLI operation follows:
 
-1. Resolve a selector against official release metadata.
-2. Select the current operating-system, architecture, and CPU artifact.
-3. Fetch the expected SHA-256 from official metadata.
-4. Download to a temporary file inside the Jolter cache.
-5. Verify the complete archive.
-6. Extract into a temporary directory with path and size checks.
-7. Verify the expected executable and write an installation manifest.
-8. Rename the staged directory to its final version path.
-9. Persist the active exact version and regenerate self-shims.
+1. parse global output controls and the subcommand;
+2. discover `JOLTER_HOME` and create the base layout;
+3. construct installer and orchestration services;
+4. resolve project or direct-request inputs;
+5. perform installation, activation, or inspection;
+6. refresh shims when the operation changes executable routing;
+7. render a final result or machine payload.
 
-## Package Manager Flow
+Errors cross crate boundaries as typed errors and become one user-facing
+failure at the CLI edge.
 
-1. Resolve npm, pnpm, or Yarn from `jolter use`, `jolter.json`, or
-   `package.json#packageManager`.
-2. Query abbreviated metadata from the official npm registry.
-3. Select the highest stable release matching the requested selector.
-4. Validate the release's npm-style `engines.node` range against the selected
-   project Node.js version.
-5. Download the published tarball and verify its SHA-512 SRI value.
-6. When an exact Corepack descriptor includes a hash, verify that hash over the
-   same tarball.
-7. Extract and publish it atomically under
-   `~/.jolter/tools/<manager>/<version>`.
-8. Persist the exact active version for manual `use` and project sync flows.
-9. Dispatch its bundled JavaScript entry point through the selected Node.js
-   runtime.
+Individual exact-version publication is atomic. Multi-target orchestration is
+restartable rather than globally transactional: if a later runtime, tool, or
+removal fails, previously completed operations remain valid and are reused on
+the next run.
 
-Locally reusable package-manager installations are checked against the
-selected Node.js version using their installed `package.json` metadata.
+## Project Resolution
 
-Transient provider failures are retried at most three times with bounded
-backoff. HTTP 408, 429, 500, 502, 503, and 504 responses are retryable.
-Metadata cache publication is serialized by cache-key locks, while
-installation publication is serialized by exact-version locks.
+The resolver canonicalizes the starting directory, searches upward, and
+normalizes requirements into:
 
-## Switching
+- an optional runtime request with its source;
+- zero or more tool requests with their source;
+- a project root.
 
-Each generated shim is the Jolter executable under a tool-specific file name.
-At startup, the CLI checks its invocation name before parsing commands.
+Runtime precedence:
 
-The shim resolves project requirements and chooses the highest complete local
-installation that matches. Project runtime and package manager requirements
-take priority. If the project has no matching requirement, the shim uses the
-exact globally active runtime or package manager version.
+1. `jolter.json`;
+2. `.node-version`;
+3. `.nvmrc`.
 
-## Diagnostics and Inventory
+Tool precedence:
 
-`jolter list` reads storage directories without hiding incomplete
-installations. It reports runtimes and managed package managers as `ready` only
-when their expected executable or entry point exists.
+1. a non-empty `jolter.json#tools`;
+2. `package.json#packageManager`.
 
-`jolter doctor --json` serializes the same checks and health result used by the
-human-readable command. This keeps automation and interactive diagnostics on
-one behavior path.
+Global activation is a shim fallback, not a project requirement, so `sync`
+cannot accidentally treat a developer's default as repository configuration.
 
-## Storage Lifecycle
+## Runtime Installation
 
-Exact-version uninstall and prune operations acquire the same installation
-locks as install and repair. Active runtimes and package managers are protected
-unless uninstall is explicitly forced. Prune protects active versions,
-versions required by the current project, and the configured number of newest
-complete versions.
+1. Parse and validate the request.
+2. Query or reuse provider metadata.
+3. select the highest stable matching release.
+4. Select the operating-system and architecture artifact.
+5. Obtain trusted SHA-256 metadata.
+6. Acquire cache and exact-version coordination as needed.
+7. Download into a temporary cache file.
+8. Verify the complete archive.
+9. Extract into a temporary directory with path and size controls.
+10. Verify the expected executable.
+11. Write `.jolter-install.json`.
+12. Rename the staged directory to its final exact-version path.
+13. Persist activation when requested.
 
-Cache cleaning acquires an exclusive maintenance lock. Installation and repair
-hold a shared maintenance lock so verified archives cannot disappear while an
-operation is using them.
+Exact complete installations can be reused. Broad selectors that describe a
+moving provider state require suitable metadata.
 
-## Shell Onboarding
+## Managed Tool Installation
 
-`jolter setup` refreshes the self-shims and emits commands for PowerShell,
-Command Prompt, Bash, Zsh, or Fish. Shell profile and persistent environment
-changes remain explicit user actions; the setup command does not rewrite
-profile files itself.
+1. Resolve npm, pnpm, or Yarn from a direct request or project source.
+2. Require an exact selected Node.js runtime.
+3. Query abbreviated package metadata from the npm registry.
+4. Select the highest stable matching release.
+5. Validate `engines.node`.
+6. Download the package tarball.
+7. Verify registry SHA-512 SRI.
+8. Verify an optional exact Corepack-style hash.
+9. Extract into a temporary tool directory.
+10. Verify the expected JavaScript entry point.
+11. Write `.jolter-tool.json`.
+12. Atomically publish under `tools/<kind>/<version>`.
+13. Dispatch the entry point through the selected Node.js executable.
+
+Reusable tool installations are rechecked against the selected Node.js
+version.
+
+## Cache and Concurrency
+
+The cache separates provider metadata, verified downloads, and locks.
+
+- Metadata-key locks serialize publication of one metadata response.
+- Runtime-version locks serialize exact runtime publication and removal.
+- Tool-version locks serialize exact tool publication and removal.
+- A maintenance lock coordinates cache cleaning with operations using cached
+  artifacts.
+
+Temporary files live on the same storage volume as their publication target
+where atomic rename semantics are required.
+
+## Activation
+
+Global active versions are stored as exact semantic versions in
+`config/active.json`. Runtime and tool kinds share this activation map.
+
+Activation is not environment-variable mutation. The shim reads project
+requirements and global state on each invocation. Forced uninstall clears an
+activation only when it removes that exact active version.
+
+## Shim Dispatch
+
+Shims are copies of the Jolter executable under supported command names. At
+startup, Jolter checks its invocation filename before normal CLI parsing.
+
+Runtime dispatch:
+
+1. resolve a matching project installation;
+2. otherwise read the exact global activation;
+3. verify the executable exists;
+4. launch it with the original arguments and constructed environment.
+
+Tool dispatch:
+
+1. resolve the selected Node.js runtime;
+2. resolve a project or global managed tool where applicable;
+3. fall back to bundled npm/npx for Node.js where applicable;
+4. launch the JavaScript entry point through Node.js.
+
+Missing versions fail explicitly. Shim dispatch does not perform downloads.
+
+## Output Architecture
+
+Core and installer operations emit structured events for selection,
+resolution, cache reuse, connection, transfer, verification, extraction,
+publication, activation, cleanup, configuration, diagnostics, and shims.
+
+The CLI renderer chooses:
+
+- one updating line for interactive terminals;
+- deterministic event lines for CI and redirected streams;
+- quiet final-only presentation;
+- silent decoration for JSON and generated scripts.
+
+Final results go to standard output. Progress and failures go to standard
+error. ANSI rendering is conditional on terminal capability and user controls.
+
+## Diagnostics
+
+Inventory reads storage directly and intentionally includes incomplete
+semantic-version directories. Doctor combines:
+
+- pure filesystem and configuration checks;
+- project resolution;
+- manifest and permission validation;
+- bounded subprocess probes;
+- `PATH` and competing-manager inspection;
+- cache and network-environment checks.
+
+Human and JSON doctor modes serialize the same report so automation cannot
+silently diverge from interactive behavior.
+
+## Lifecycle Operations
+
+Uninstall and prune use installer removal primitives under exact-version
+locks. Prune computes a protected set from:
+
+- global activations;
+- current project requirements;
+- per-kind complete-version retention.
+
+Cache cleanup uses exclusive maintenance coordination. It does not delete
+installed versions or activation state.
+
+## Compatibility Boundaries
+
+Canonical schema-version-1 output uses `tools`. The config parser accepts the
+legacy `packageManager` map alias, and diagnostics accept legacy tool manifest
+fields. The resolver separately supports the standard string-valued
+`package.json#packageManager` source.
+
+See [compatibility](compatibility.md) before changing serialized fields,
+storage paths, JSON output, or provider selection.
+
+## Extension Points
+
+New runtime or tool providers require coordinated changes across domain types,
+installer providers, storage paths, shim commands, doctor checks, CLI parsing,
+tests, and docs. A plugin system is roadmap work and is not part of the current
+runtime extension model.

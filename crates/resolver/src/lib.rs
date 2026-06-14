@@ -5,8 +5,7 @@ use std::{
 
 use jolter_config::{ProjectConfig, discover};
 use jolter_runtime::{
-    PackageManagerRequest, PackageManagerRequestError, RuntimeKind, RuntimeRequest,
-    RuntimeRequestError,
+    RuntimeKind, RuntimeRequest, RuntimeRequestError, ToolRequest, ToolRequestError,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -15,7 +14,7 @@ use thiserror::Error;
 pub struct ProjectResolution {
     pub root: PathBuf,
     pub runtime: Option<ResolvedRuntime>,
-    pub package_manager: Option<ResolvedPackageManager>,
+    pub tools: Vec<ResolvedTool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,8 +24,8 @@ pub struct ResolvedRuntime {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedPackageManager {
-    pub request: PackageManagerRequest,
+pub struct ResolvedTool {
+    pub request: ToolRequest,
     pub source: RequirementSource,
 }
 
@@ -64,20 +63,15 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
         },
     };
 
-    let package_manager = match config
-        .as_ref()
-        .map(package_manager_from_config)
-        .transpose()?
-        .flatten()
-    {
-        Some(request) => Some(request),
-        None => resolve_package_json(&start)?,
+    let tools = match config.as_ref().map(tools_from_config).transpose()? {
+        Some(tools) if !tools.is_empty() => tools,
+        _ => resolve_package_json(&start)?.into_iter().collect(),
     };
 
     Ok(ProjectResolution {
         root: project_root,
         runtime,
-        package_manager,
+        tools,
     })
 }
 
@@ -92,31 +86,26 @@ fn runtime_from_config(
     })
 }
 
-fn package_manager_from_config(
-    config: &ProjectConfig,
-) -> Result<Option<ResolvedPackageManager>, PackageManagerRequestError> {
+fn tools_from_config(config: &ProjectConfig) -> Result<Vec<ResolvedTool>, ToolRequestError> {
     config
-        .package_manager
+        .tools
         .iter()
-        .next()
         .map(|(name, selector)| {
-            PackageManagerRequest::new(name.parse()?, selector).map(|request| {
-                ResolvedPackageManager {
-                    request,
-                    source: RequirementSource::JolterConfig,
-                }
+            ToolRequest::new(name.parse()?, selector).map(|request| ResolvedTool {
+                request,
+                source: RequirementSource::JolterConfig,
             })
         })
-        .transpose()
+        .collect()
 }
 
-fn resolved_package_manager(
+fn resolved_tool(
     name: &str,
     selector: &str,
     source: RequirementSource,
-) -> Result<ResolvedPackageManager, PackageManagerRequestError> {
-    Ok(ResolvedPackageManager {
-        request: PackageManagerRequest::new(name.parse()?, selector)?,
+) -> Result<ResolvedTool, ToolRequestError> {
+    Ok(ResolvedTool {
+        request: ToolRequest::new(name.parse()?, selector)?,
         source,
     })
 }
@@ -140,7 +129,7 @@ fn resolve_node_file(
     Ok(Some(ResolvedRuntime { request, source }))
 }
 
-fn resolve_package_json(start: &Path) -> Result<Option<ResolvedPackageManager>, ResolverError> {
+fn resolve_package_json(start: &Path) -> Result<Option<ResolvedTool>, ResolverError> {
     let Some(path) = find_upward(start, "package.json") else {
         return Ok(None);
     };
@@ -162,7 +151,7 @@ fn resolve_package_json(start: &Path) -> Result<Option<ResolvedPackageManager>, 
     if name.is_empty() || selector.is_empty() {
         return Err(ResolverError::InvalidPackageManager(value.to_owned()));
     }
-    Ok(Some(resolved_package_manager(
+    Ok(Some(resolved_tool(
         name,
         selector,
         RequirementSource::PackageJson,
@@ -183,7 +172,7 @@ pub enum ResolverError {
     #[error(transparent)]
     Runtime(#[from] RuntimeRequestError),
     #[error(transparent)]
-    PackageManager(#[from] PackageManagerRequestError),
+    Tool(#[from] ToolRequestError),
     #[error("failed to resolve path {path}: {source}")]
     Canonicalize {
         path: PathBuf,
@@ -227,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_package_manager_and_node_version_independently() {
+    fn resolves_package_json_tool_and_node_version_independently() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(
             temp.path().join("package.json"),
@@ -238,14 +227,11 @@ mod tests {
 
         let resolution = resolve(temp.path()).unwrap();
         assert_eq!(resolution.runtime.unwrap().request.to_string(), "node@22");
-        assert_eq!(
-            resolution.package_manager.unwrap().request.to_string(),
-            "pnpm@10.12.1"
-        );
+        assert_eq!(resolution.tools[0].request.to_string(), "pnpm@10.12.1");
     }
 
     #[test]
-    fn resolves_a_corepack_hashed_package_manager() {
+    fn resolves_a_corepack_hashed_tool() {
         let temp = tempfile::tempdir().unwrap();
         let hash = "a".repeat(56);
         fs::write(
@@ -257,9 +243,28 @@ mod tests {
         let resolution = resolve(temp.path()).unwrap();
 
         assert_eq!(
-            resolution.package_manager.unwrap().request.to_string(),
+            resolution.tools[0].request.to_string(),
             format!("pnpm@10.12.1+sha224.{hash}")
         );
+    }
+
+    #[test]
+    fn resolves_multiple_tools_from_jolter_config() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("jolter.json"),
+            r#"{"tools":{"pnpm":"10","yarn":"4"}}"#,
+        )
+        .unwrap();
+
+        let resolution = resolve(temp.path()).unwrap();
+        let requests = resolution
+            .tools
+            .iter()
+            .map(|tool| tool.request.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(requests, ["pnpm@10", "yarn@4"]);
     }
 
     #[test]

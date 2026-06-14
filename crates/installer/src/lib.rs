@@ -13,8 +13,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use flate2::read::GzDecoder;
 use fs4::FileExt;
 use jolter_runtime::{
-    PackageManagerHash, PackageManagerHashAlgorithm, PackageManagerKind, PackageManagerRequest,
-    RuntimeKind, RuntimeRequest,
+    RuntimeKind, RuntimeRequest, ToolHash, ToolHashAlgorithm, ToolKind, ToolRequest,
 };
 use jolter_storage::{CacheStats, InstalledRuntime, InstalledTool, Storage, runtime_executable_in};
 use nodejs_semver::{Range as NodeRange, Version as NodeVersion};
@@ -196,12 +195,12 @@ pub struct InstallOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackageManagerRelease {
-    pub kind: PackageManagerKind,
+pub struct ToolRelease {
+    pub kind: ToolKind,
     pub version: Version,
     pub artifact: Artifact,
     pub node_engine: Option<String>,
-    pub expected_hash: Option<PackageManagerHash>,
+    pub expected_hash: Option<ToolHash>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -551,10 +550,7 @@ impl Installer {
         self.install_inner(request, true)
     }
 
-    pub fn resolve_package_manager(
-        &self,
-        request: &PackageManagerRequest,
-    ) -> Result<PackageManagerRelease, InstallerError> {
+    pub fn resolve_tool(&self, request: &ToolRequest) -> Result<ToolRelease, InstallerError> {
         let package_name = request.kind.registry_package();
         let encoded_name = package_name.replace('@', "%40").replace('/', "%2F");
         let url = format!("https://registry.npmjs.org/{encoded_name}");
@@ -582,10 +578,10 @@ impl Installer {
                 .max_by(|left, right| left.0.cmp(&right.0))
                 .map(|(_, release)| release)
         }
-        .ok_or_else(|| InstallerError::PackageManagerVersionNotFound(request.clone()))?;
+        .ok_or_else(|| InstallerError::ToolVersionNotFound(request.clone()))?;
 
         let version = Version::parse(&selected.version)
-            .map_err(|_| InstallerError::PackageManagerVersionNotFound(request.clone()))?;
+            .map_err(|_| InstallerError::ToolVersionNotFound(request.clone()))?;
         let artifact_url = Url::parse(&selected.dist.tarball)
             .map_err(|_| InstallerError::InvalidUrl(selected.dist.tarball.clone()))?;
         let file_name = artifact_url
@@ -595,7 +591,7 @@ impl Installer {
             .ok_or_else(|| InstallerError::InvalidArtifactName(selected.dist.tarball.clone()))?
             .to_owned();
 
-        Ok(PackageManagerRelease {
+        Ok(ToolRelease {
             kind: request.kind,
             version,
             artifact: Artifact {
@@ -610,23 +606,23 @@ impl Installer {
         })
     }
 
-    pub fn install_package_manager(
+    pub fn install_tool(
         &self,
-        request: &PackageManagerRequest,
+        request: &ToolRequest,
         node_version: &Version,
     ) -> Result<ToolInstallOutcome, InstallerError> {
-        self.install_package_manager_inner(request, node_version, false)
+        self.install_tool_inner(request, node_version, false)
     }
 
-    pub fn repair_package_manager(
+    pub fn repair_tool(
         &self,
-        request: &PackageManagerRequest,
+        request: &ToolRequest,
         node_version: &Version,
     ) -> Result<ToolInstallOutcome, InstallerError> {
-        self.install_package_manager_inner(request, node_version, true)
+        self.install_tool_inner(request, node_version, true)
     }
 
-    pub fn validate_installed_package_manager(
+    pub fn validate_installed_tool(
         &self,
         tool: &InstalledTool,
         node_version: &Version,
@@ -675,9 +671,9 @@ impl Installer {
         )
     }
 
-    pub fn uninstall_package_manager(
+    pub fn uninstall_tool(
         &self,
-        kind: PackageManagerKind,
+        kind: ToolKind,
         version: &Version,
     ) -> Result<RemovalOutcome, InstallerError> {
         self.storage.ensure_layout()?;
@@ -690,7 +686,7 @@ impl Installer {
             &self.storage,
             path,
             &self.storage.tool_dir(kind),
-            InstallationType::PackageManager,
+            InstallationType::Tool,
         )
     }
 
@@ -715,9 +711,9 @@ impl Installer {
         Ok(outcome)
     }
 
-    fn install_package_manager_inner(
+    fn install_tool_inner(
         &self,
-        request: &PackageManagerRequest,
+        request: &ToolRequest,
         node_version: &Version,
         repair: bool,
     ) -> Result<ToolInstallOutcome, InstallerError> {
@@ -726,7 +722,7 @@ impl Installer {
         FileExt::lock_shared(&maintenance).map_err(InstallerError::Io)?;
         let requested = request.to_string();
         self.report_stage(ProgressAction::Resolve, &requested);
-        let release = self.resolve_package_manager(request)?;
+        let release = self.resolve_tool(request)?;
         let target = format!("{}@{}", release.kind, release.version);
         validate_node_engine(
             release.kind,
@@ -750,7 +746,7 @@ impl Installer {
             release.artifact.validate()?;
             let archive = self.obtain_archive(&release.artifact)?;
             self.report_stage(ProgressAction::Verify, &release.artifact.file_name);
-            verify_package_manager_hash(&archive, hash)?;
+            verify_tool_hash(&archive, hash)?;
             Some(archive)
         } else {
             None
@@ -1028,11 +1024,7 @@ impl Installer {
             .map_err(InstallerError::Io)
     }
 
-    fn tool_install_lock(
-        &self,
-        kind: PackageManagerKind,
-        version: &Version,
-    ) -> Result<File, InstallerError> {
+    fn tool_install_lock(&self, kind: ToolKind, version: &Version) -> Result<File, InstallerError> {
         let directory = self.storage.cache_dir().join("locks");
         fs::create_dir_all(&directory).map_err(InstallerError::Io)?;
         OpenOptions::new()
@@ -1166,7 +1158,7 @@ impl Installer {
 #[derive(Debug, Clone, Copy)]
 enum InstallationType {
     Runtime,
-    PackageManager,
+    Tool,
 }
 
 fn remove_installation(
@@ -1181,7 +1173,7 @@ fn remove_installation(
     if !path.exists() {
         return Err(match installation_type {
             InstallationType::Runtime => InstallerError::RuntimeNotInstalled { path },
-            InstallationType::PackageManager => InstallerError::ToolNotInstalled { path },
+            InstallationType::Tool => InstallerError::ToolNotInstalled { path },
         });
     }
     let CacheStats { bytes, .. } = storage.path_stats(&path)?;
@@ -1559,21 +1551,18 @@ fn verify_sha512(path: &Path, expected: &str) -> Result<(), InstallerError> {
     }
 }
 
-fn verify_package_manager_hash(
-    path: &Path,
-    expected: &PackageManagerHash,
-) -> Result<(), InstallerError> {
+fn verify_tool_hash(path: &Path, expected: &ToolHash) -> Result<(), InstallerError> {
     let actual = match expected.algorithm {
-        PackageManagerHashAlgorithm::Sha1 => digest_hex::<Sha1>(path)?,
-        PackageManagerHashAlgorithm::Sha224 => digest_hex::<Sha224>(path)?,
-        PackageManagerHashAlgorithm::Sha256 => digest_hex::<Sha256>(path)?,
-        PackageManagerHashAlgorithm::Sha384 => digest_hex::<Sha384>(path)?,
-        PackageManagerHashAlgorithm::Sha512 => digest_hex::<Sha512>(path)?,
+        ToolHashAlgorithm::Sha1 => digest_hex::<Sha1>(path)?,
+        ToolHashAlgorithm::Sha224 => digest_hex::<Sha224>(path)?,
+        ToolHashAlgorithm::Sha256 => digest_hex::<Sha256>(path)?,
+        ToolHashAlgorithm::Sha384 => digest_hex::<Sha384>(path)?,
+        ToolHashAlgorithm::Sha512 => digest_hex::<Sha512>(path)?,
     };
     if actual.eq_ignore_ascii_case(&expected.value) {
         Ok(())
     } else {
-        Err(InstallerError::PackageManagerHashMismatch {
+        Err(InstallerError::ToolHashMismatch {
             algorithm: expected.algorithm,
             expected: expected.value.clone(),
             actual,
@@ -1604,8 +1593,8 @@ fn digest_hex<D: Digest>(path: &Path) -> Result<String, InstallerError> {
 }
 
 fn validate_node_engine(
-    kind: PackageManagerKind,
-    package_manager_version: &Version,
+    kind: ToolKind,
+    tool_version: &Version,
     requirement: Option<&str>,
     node_version: &Version,
 ) -> Result<(), InstallerError> {
@@ -1614,8 +1603,8 @@ fn validate_node_engine(
     };
     let range =
         NodeRange::parse(requirement).map_err(|source| InstallerError::InvalidNodeEngineRange {
-            package_manager: kind,
-            version: package_manager_version.clone(),
+            tool: kind,
+            version: tool_version.clone(),
             requirement: requirement.to_owned(),
             details: source.to_string(),
         })?;
@@ -1624,8 +1613,8 @@ fn validate_node_engine(
         Ok(())
     } else {
         Err(InstallerError::IncompatibleNodeVersion {
-            package_manager: kind,
-            version: package_manager_version.clone(),
+            tool: kind,
+            version: tool_version.clone(),
             requirement: requirement.to_owned(),
             node_version: node_version.clone(),
         })
@@ -1937,27 +1926,24 @@ fn write_manifest(destination: &Path, release: &Release) -> Result<(), Installer
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ToolInstallManifest<'a> {
-    package_manager: String,
+    tool: String,
     version: String,
     artifact_url: &'a str,
     integrity: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     node_engine: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    package_manager_hash: Option<String>,
+    tool_hash: Option<String>,
 }
 
-fn write_tool_manifest(
-    destination: &Path,
-    release: &PackageManagerRelease,
-) -> Result<(), InstallerError> {
+fn write_tool_manifest(destination: &Path, release: &ToolRelease) -> Result<(), InstallerError> {
     let manifest = ToolInstallManifest {
-        package_manager: release.kind.to_string(),
+        tool: release.kind.to_string(),
         version: release.version.to_string(),
         artifact_url: &release.artifact.url,
         integrity: release.artifact.integrity.to_string(),
         node_engine: release.node_engine.as_deref(),
-        package_manager_hash: release.expected_hash.as_ref().map(ToString::to_string),
+        tool_hash: release.expected_hash.as_ref().map(ToString::to_string),
     };
     let contents = serde_json::to_vec_pretty(&manifest).map_err(InstallerError::Manifest)?;
     fs::write(destination.join(".jolter-tool.json"), contents).map_err(InstallerError::Io)
@@ -1979,9 +1965,9 @@ pub enum InstallerError {
     UnsupportedIntegrity(String),
     #[error("artifact checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
-    #[error("{algorithm} package manager hash mismatch: expected {expected}, got {actual}")]
-    PackageManagerHashMismatch {
-        algorithm: PackageManagerHashAlgorithm,
+    #[error("{algorithm} tool hash mismatch: expected {expected}, got {actual}")]
+    ToolHashMismatch {
+        algorithm: ToolHashAlgorithm,
         expected: String,
         actual: String,
     },
@@ -2031,28 +2017,26 @@ pub enum InstallerError {
         #[source]
         source: serde_json::Error,
     },
-    #[error(
-        "{package_manager}@{version} has invalid Node.js engine range `{requirement}`: {details}"
-    )]
+    #[error("{tool}@{version} has invalid Node.js engine range `{requirement}`: {details}")]
     InvalidNodeEngineRange {
-        package_manager: PackageManagerKind,
+        tool: ToolKind,
         version: Version,
         requirement: String,
         details: String,
     },
     #[error(
-        "{package_manager}@{version} requires Node.js `{requirement}`, but node@{node_version} was selected"
+        "{tool}@{version} requires Node.js `{requirement}`, but node@{node_version} was selected"
     )]
     IncompatibleNodeVersion {
-        package_manager: PackageManagerKind,
+        tool: ToolKind,
         version: Version,
         requirement: String,
         node_version: Version,
     },
     #[error("no stable release satisfies {0}")]
     VersionNotFound(RuntimeRequest),
-    #[error("no stable package manager release satisfies {0}")]
-    PackageManagerVersionNotFound(PackageManagerRequest),
+    #[error("no stable tool release satisfies {0}")]
+    ToolVersionNotFound(ToolRequest),
     #[error("release {version} does not provide required asset `{asset}`")]
     AssetNotFound { version: Version, asset: String },
     #[error("unsupported operating system `{0}`")]
@@ -2063,14 +2047,14 @@ pub enum InstallerError {
     UnsupportedBunCpu,
     #[error("existing runtime installation at {path} is incomplete")]
     CorruptInstallation { path: PathBuf },
-    #[error("existing package manager installation at {path} is incomplete")]
+    #[error("existing tool installation at {path} is incomplete")]
     CorruptToolInstallation { path: PathBuf },
     #[error("runtime installation was not found at {path}")]
     RuntimeNotInstalled { path: PathBuf },
-    #[error("package manager installation was not found at {path}")]
+    #[error("tool installation was not found at {path}")]
     ToolNotInstalled { path: PathBuf },
-    #[error("no entrypoint is defined for package manager {0}")]
-    MissingToolEntrypoint(PackageManagerKind),
+    #[error("no entrypoint is defined for tool {0}")]
+    MissingToolEntrypoint(ToolKind),
     #[error("refusing to remove runtime path outside its expected parent: {path}")]
     UnsafeRemoval { path: PathBuf },
     #[error("failed to remove incomplete runtime installation at {path}: {source}")]
@@ -2573,7 +2557,7 @@ mod tests {
     }
 
     #[test]
-    fn installs_a_verified_package_manager_archive() {
+    fn installs_a_verified_tool_archive() {
         let temp = tempfile::tempdir().unwrap();
         let storage = Storage::new(temp.path());
         let archive = tar_gz_with_file("package/bin/pnpm.cjs", b"fake pnpm");
@@ -2612,19 +2596,19 @@ mod tests {
             Platform::current().unwrap(),
             client.clone(),
         );
-        let request: PackageManagerRequest = format!("pnpm@10.2.0+sha224.{corepack_hash}")
+        let request: ToolRequest = format!("pnpm@10.2.0+sha224.{corepack_hash}")
             .parse()
             .unwrap();
 
         let outcome = installer
-            .install_package_manager(&request, &Version::new(20, 0, 0))
+            .install_tool(&request, &Version::new(20, 0, 0))
             .unwrap();
 
         assert!(outcome.downloaded);
         assert_eq!(outcome.tool.version, Version::new(10, 2, 0));
         assert!(
             storage
-                .tool_entrypoint(PackageManagerKind::Pnpm, &outcome.tool.version, "pnpm")
+                .tool_entrypoint(ToolKind::Pnpm, &outcome.tool.version, "pnpm")
                 .unwrap()
                 .is_file()
         );
@@ -2634,13 +2618,13 @@ mod tests {
         assert_eq!(*client.download_count.lock().unwrap(), 1);
 
         let reused = installer
-            .install_package_manager(&"pnpm@latest".parse().unwrap(), &Version::new(20, 0, 0))
+            .install_tool(&"pnpm@latest".parse().unwrap(), &Version::new(20, 0, 0))
             .unwrap();
         assert!(!reused.downloaded);
     }
 
     #[test]
-    fn repairs_and_uninstalls_package_managers_and_cleans_cache() {
+    fn repairs_and_uninstalls_tools_and_cleans_cache() {
         let temp = tempfile::tempdir().unwrap();
         let storage = Storage::new(temp.path());
         storage.ensure_layout().unwrap();
@@ -2670,23 +2654,20 @@ mod tests {
         let installer =
             Installer::with_client(storage.clone(), Platform::current().unwrap(), client);
         let version = Version::new(10, 2, 0);
-        fs::create_dir_all(storage.tool_version_dir(PackageManagerKind::Pnpm, &version)).unwrap();
+        fs::create_dir_all(storage.tool_version_dir(ToolKind::Pnpm, &version)).unwrap();
 
         assert!(matches!(
-            installer
-                .install_package_manager(&"pnpm@10.2.0".parse().unwrap(), &Version::new(20, 0, 0)),
+            installer.install_tool(&"pnpm@10.2.0".parse().unwrap(), &Version::new(20, 0, 0)),
             Err(InstallerError::CorruptToolInstallation { .. })
         ));
         let repaired = installer
-            .repair_package_manager(&"pnpm@10.2.0".parse().unwrap(), &Version::new(20, 0, 0))
+            .repair_tool(&"pnpm@10.2.0".parse().unwrap(), &Version::new(20, 0, 0))
             .unwrap();
         assert!(repaired.downloaded);
-        let removed = installer
-            .uninstall_package_manager(PackageManagerKind::Pnpm, &version)
-            .unwrap();
+        let removed = installer.uninstall_tool(ToolKind::Pnpm, &version).unwrap();
         assert!(removed.reclaimed_bytes > 0);
         assert!(matches!(
-            installer.uninstall_package_manager(PackageManagerKind::Pnpm, &version),
+            installer.uninstall_tool(ToolKind::Pnpm, &version),
             Err(InstallerError::ToolNotInstalled { .. })
         ));
 
@@ -2769,27 +2750,24 @@ mod tests {
         });
         let installer =
             Installer::with_client(storage.clone(), Platform::current().unwrap(), client);
-        let request: PackageManagerRequest = format!("pnpm@10.2.0+sha224.{}", "0".repeat(56))
+        let request: ToolRequest = format!("pnpm@10.2.0+sha224.{}", "0".repeat(56))
             .parse()
             .unwrap();
 
         let error = installer
-            .install_package_manager(&request, &Version::new(20, 0, 0))
+            .install_tool(&request, &Version::new(20, 0, 0))
             .unwrap_err();
 
-        assert!(matches!(
-            error,
-            InstallerError::PackageManagerHashMismatch { .. }
-        ));
+        assert!(matches!(error, InstallerError::ToolHashMismatch { .. }));
         assert!(
             !storage
-                .tool_version_dir(PackageManagerKind::Pnpm, &Version::new(10, 2, 0))
+                .tool_version_dir(ToolKind::Pnpm, &Version::new(10, 2, 0))
                 .exists()
         );
     }
 
     #[test]
-    fn rejects_a_package_manager_incompatible_with_selected_node() {
+    fn rejects_a_tool_incompatible_with_selected_node() {
         let temp = tempfile::tempdir().unwrap();
         let storage = Storage::new(temp.path());
         let metadata_url = "https://registry.npmjs.org/pnpm".to_owned();
@@ -2819,7 +2797,7 @@ mod tests {
             Installer::with_client(storage, Platform::current().unwrap(), client.clone());
 
         let error = installer
-            .install_package_manager(&"pnpm@11.6.0".parse().unwrap(), &Version::new(20, 19, 0))
+            .install_tool(&"pnpm@11.6.0".parse().unwrap(), &Version::new(20, 19, 0))
             .unwrap_err();
 
         assert!(matches!(
@@ -2832,7 +2810,7 @@ mod tests {
     #[test]
     fn evaluates_npm_style_node_engine_ranges() {
         validate_node_engine(
-            PackageManagerKind::Pnpm,
+            ToolKind::Pnpm,
             &Version::new(10, 2, 0),
             Some("^18.18.0 || >=20.9.0"),
             &Version::new(20, 10, 0),
@@ -2840,7 +2818,7 @@ mod tests {
         .unwrap();
 
         let error = validate_node_engine(
-            PackageManagerKind::Pnpm,
+            ToolKind::Pnpm,
             &Version::new(10, 2, 0),
             Some("^18.18.0 || >=20.9.0"),
             &Version::new(19, 0, 0),
@@ -2929,18 +2907,18 @@ mod tests {
             Err(InstallerError::ChecksumMismatch { .. })
         ));
         for algorithm in [
-            PackageManagerHashAlgorithm::Sha1,
-            PackageManagerHashAlgorithm::Sha256,
-            PackageManagerHashAlgorithm::Sha384,
-            PackageManagerHashAlgorithm::Sha512,
+            ToolHashAlgorithm::Sha1,
+            ToolHashAlgorithm::Sha256,
+            ToolHashAlgorithm::Sha384,
+            ToolHashAlgorithm::Sha512,
         ] {
-            let expected = PackageManagerHash {
+            let expected = ToolHash {
                 algorithm,
                 value: "0".repeat(algorithm.hex_length()),
             };
             assert!(matches!(
-                verify_package_manager_hash(temp.path(), &expected),
-                Err(InstallerError::PackageManagerHashMismatch { .. })
+                verify_tool_hash(temp.path(), &expected),
+                Err(InstallerError::ToolHashMismatch { .. })
             ));
         }
     }

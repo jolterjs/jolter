@@ -1,51 +1,185 @@
 # Security Model
 
-Jolter treats release metadata, archives, and archive contents as untrusted
-inputs even when they come from an official provider.
+Jolter installs and executes developer toolchains, so its primary security goal
+is to prevent unverified network or archive content from becoming a published
+managed installation.
 
-## Network
+## Trust Boundaries
 
-- only `https` URLs are accepted
-- redirect targets must remain HTTPS
-- metadata responses are bounded to 16 MiB
-- artifact responses and extracted archives are bounded to 4 GiB
-- requests use finite connection and total timeouts
-- transient failures use at most three attempts with bounded backoff
+Jolter treats these as untrusted input:
+
+- provider metadata and HTTP headers;
+- redirects and artifact URLs;
+- downloaded archives and package tarballs;
+- archive entry paths, links, permissions, and expanded size;
+- project configuration and compatibility files;
+- environment variables affecting storage, proxies, certificates, and output;
+- existing files under a writable `JOLTER_HOME`.
+
+Official provider status does not bypass validation.
+
+The operating system, Rust TLS implementation, Jolter binary, configured trust
+store, and authenticated provider integrity metadata remain part of the trusted
+computing base.
+
+## Bootstrap Boundary
+
+The one-line installers execute code obtained from:
+
+```text
+https://jolter.dev/win/install
+https://jolter.dev/unix/install
+```
+
+That bootstrap is a separate trust boundary from Jolter's runtime installer.
+Security-sensitive environments should download and review the script first or
+install a release archive after manually verifying its published SHA-256 file.
+See [installation](installation.md).
+
+## Transport
+
+Jolter accepts only HTTPS metadata and artifact URLs. Redirect targets are
+validated and must remain HTTPS.
+
+Requests use finite connection and total timeouts. Metadata responses are
+bounded to 16 MiB. Artifact downloads and extracted content are bounded to
+4 GiB. Retry behavior is limited to three attempts with bounded backoff for
+specific transient statuses.
+
+Jolter does not offer an option to disable TLS verification.
 
 ## Integrity
 
-Node.js checksums come from the matching official `SHASUMS256.txt`. Bun and
-Deno use GitHub release SHA-256 digests, with provider checksum files as a
-fallback. npm, pnpm, and Yarn packages use SHA-512 Subresource Integrity values
-from official npm registry metadata. Exact Corepack-style declarations may add
-a SHA-1 or SHA-2 archive hash, which Jolter verifies in addition to registry
-SRI. Legacy SHA-1 descriptors never replace the required SHA-512 registry
-check. Verified archives are cached by integrity identity.
+Runtime integrity sources:
 
-## Extraction
+- Node.js: matching official `SHASUMS256.txt`;
+- Bun: GitHub release SHA-256 digest, with provider checksum data where
+  available;
+- Deno: GitHub release SHA-256 digest, with provider checksum data where
+  available.
 
-ZIP paths must pass the archive library's enclosed-path check. TAR paths,
-hard links, and symbolic links are validated before creation. Extraction
-rejects parent traversal, absolute paths, unsupported entries, unsafe parent
-symlinks, excessive entries, and excessive expanded size.
+Managed tool integrity:
 
-## Installation
+- npm registry SHA-512 Subresource Integrity metadata is required;
+- exact Corepack-style SHA-1 or SHA-2 hashes are verified as an additional
+  constraint;
+- a legacy SHA-1 declaration never replaces registry SHA-512 verification.
 
-An installation is built in a temporary directory under the target runtime
-directory. It becomes visible only after its expected executable exists and
-the completed directory is renamed into place. A per-version file lock
-serializes concurrent installers.
+Verified archives are cached by integrity identity rather than trusted merely
+because a filename already exists.
 
-Jolter does not run a downloaded executable as part of installation.
+## Archive Extraction
 
-Metadata cache writes use per-key locks. Cache cleanup uses an exclusive
-maintenance lock, while install, repair, uninstall, and prune participate in
-the same locking protocol.
+ZIP entries must pass enclosed-path validation. TAR entries, hard links, and
+symbolic links are validated before creation.
 
-`jolter doctor` may execute an already-installed runtime or package manager
-with `--version`. That probe is bounded to five seconds and captures at most
-16 KiB from each output stream.
+Extraction rejects:
 
-Download progress is calculated locally from response byte counts and elapsed
-time. It does not transmit terminal, timing, or usage information and does not
-introduce telemetry.
+- absolute paths;
+- parent-directory traversal;
+- unsupported entry types;
+- unsafe parent symlinks;
+- links escaping the staging root;
+- excessive entry counts;
+- excessive expanded size.
+
+Extraction occurs in a staging directory, not directly over a live
+installation.
+
+## Atomic Publication
+
+A runtime or tool becomes visible at its final path only after:
+
+1. artifact integrity succeeds;
+2. extraction succeeds;
+3. the required executable or entry point exists;
+4. the installation manifest is written;
+5. the staging directory is atomically renamed.
+
+Jolter does not execute a downloaded runtime or tool as part of installation.
+
+Exact-version file locks serialize concurrent publication and removal.
+Metadata-key locks serialize cache publication. An exclusive maintenance lock
+prevents cache cleaning from racing operations that use cached artifacts.
+
+## Filesystem Permissions
+
+`JOLTER_HOME` should be writable only by the user or trusted automation
+identity that owns it. If another principal can modify managed executables,
+tool entry points, manifests, shims, or active state, that principal can affect
+future command execution.
+
+Do not share one writable home between mutually untrusted CI jobs,
+repositories, or users.
+
+Project configuration is code-adjacent input. Review changes to `jolter.json`,
+`.node-version`, `.nvmrc`, and `package.json#packageManager` with the same care
+as build configuration.
+
+## Execution
+
+Normal shims execute the runtime or tool selected by project resolution.
+Managed JavaScript tools run through the selected Node.js executable.
+
+`jolter doctor` may execute already-installed runtimes and tools with
+`--version`. Each probe:
+
+- is limited to five seconds;
+- captures at most 16 KiB per output stream;
+- receives `JOLTER_DOCTOR=1`.
+
+Do not run doctor against an untrusted restored home without first treating
+the installed executables as potentially hostile.
+
+## Proxies and Certificates
+
+Proxy and custom-CA configuration can redirect or alter network trust. Protect
+proxy credentials and CA files. Prefer CI secret injection over credentials in
+plain environment values, and never work around a TLS issue by disabling
+verification.
+
+See [networking and offline mode](networking-and-offline.md).
+
+## Cache Security
+
+Cache restore sources must match the intended operating system, architecture,
+and trust boundary. Jolter re-verifies artifact integrity before publication,
+but malicious modification of writable metadata, lock state, or already
+installed executables remains a local filesystem concern.
+
+Use immutable or scoped cache keys for untrusted contribution workflows.
+
+## Telemetry and Privacy
+
+Jolter has no usage telemetry. Download progress is calculated locally from
+response byte counts and elapsed time.
+
+Commands can print local paths, provider names, versions, and diagnostic
+environment findings. Review JSON reports and logs before attaching them to a
+public issue.
+
+## Security Non-Goals
+
+Jolter cannot protect against:
+
+- a compromised operating system or Jolter binary;
+- an attacker with write access to the user's executable paths or
+  `JOLTER_HOME`;
+- malicious code intentionally published by a trusted provider under valid
+  integrity metadata;
+- arbitrary code run by a selected runtime, package script, project, or tool;
+- secrets exposed by the surrounding shell, proxy, CI configuration, or logs.
+
+## Reporting
+
+Do not publish a suspected vulnerability with working exploit details before
+maintainers have had an opportunity to respond. Include:
+
+- affected Jolter version and platform;
+- minimal reproduction;
+- trust-boundary assumptions;
+- observed and expected behavior;
+- whether untrusted network, archive, project, or local filesystem input is
+  required.
+
+Use the repository's private security-reporting channel when available.

@@ -1,10 +1,10 @@
-# Shell Setup
+# Shell Setup and Automatic Switching
 
-Jolter switches toolchains through shims. The shims directory must be on
-`PATH` before commands such as `node`, `pnpm`, or `deno` can be resolved by
-Jolter.
+Jolter switches versions through self-shims. A shim is a Jolter executable
+installed under a supported command name. It resolves the current project and
+launches the selected real runtime or tool.
 
-Run:
+## Install Shims
 
 ```bash
 jolter setup
@@ -12,21 +12,45 @@ jolter setup
 
 The command:
 
-1. creates or refreshes every Jolter shim;
-2. checks whether the shims directory is already on the current process
-   `PATH`;
-3. prints an exact command for the current shell session;
-4. prints an exact command for persistent user configuration.
+1. creates the Jolter storage layout if needed;
+2. creates or refreshes supported command shims;
+3. checks whether the shims directory is on the current `PATH`;
+4. prints a command for the current session;
+5. prints a persistent user-level command for the selected shell.
 
-Jolter does not silently edit shell profiles or the Windows user environment.
-The printed persistent command makes that change only when the user runs it.
+Jolter does not silently rewrite profile files or the Windows user
+environment.
+
+## Shim Location
+
+Default:
+
+```text
+Windows: %USERPROFILE%\.jolter\shims
+Unix:   $HOME/.jolter/shims
+```
+
+With a custom home:
+
+```text
+$JOLTER_HOME/shims
+```
+
+Generated shims cover:
+
+```text
+node
+npm
+npx
+pnpm
+yarn
+bun
+deno
+```
+
+Platform-specific executable suffixes are handled automatically.
 
 ## Shell Selection
-
-Automatic selection defaults to PowerShell on Windows. On macOS and Linux,
-Jolter inspects `SHELL` and recognizes Bash, Zsh, and Fish.
-
-Selection can be explicit:
 
 ```bash
 jolter setup --shell powershell
@@ -36,34 +60,125 @@ jolter setup --shell zsh
 jolter setup --shell fish
 ```
 
-## Verification
+`--shell auto` is the default. Windows defaults to PowerShell. On macOS and
+Linux, Jolter inspects `SHELL` for Bash, Zsh, or Fish.
 
-After applying the persistent command, restart the shell and run:
+Use an explicit value when running from an embedded terminal, CI shell, or a
+shell whose parent process does not expose reliable detection.
+
+## PATH Precedence
+
+The shims directory must appear before competing executables from:
+
+- system Node.js installations;
+- nvm or nvm-windows;
+- fnm;
+- Volta;
+- Corepack shims;
+- package-manager-specific global binary directories.
+
+Check effective command resolution:
+
+PowerShell:
+
+```powershell
+Get-Command node
+Get-Command pnpm
+```
+
+Command Prompt:
+
+```batch
+where node
+where pnpm
+```
+
+Bash or Zsh:
+
+```bash
+type -a node
+type -a pnpm
+```
+
+Fish:
+
+```fish
+type -a node
+type -a pnpm
+```
+
+The first result should be inside the Jolter shims directory.
+
+## Verify Setup
+
+Restart the shell after applying persistent configuration:
 
 ```bash
 jolter doctor
-```
-
-The `PATH` check should report `ok`. Installed versions and incomplete
-installation directories can be inspected with:
-
-```bash
 jolter list
 ```
 
-## Custom Storage
+The doctor checks both presence and precedence. A shim can exist and still be
+ineffective when another manager appears earlier on `PATH`.
 
-When `JOLTER_HOME` is set, `setup` installs shims under:
+## How Switching Works
 
-```text
-$JOLTER_HOME/shims
+Every invocation resolves the current directory:
+
+```bash
+cd project-a
+node --version
+
+cd ../project-b
+node --version
 ```
 
-The generated instructions always use the resolved absolute shims path.
+No directory-change hook or resident daemon is needed. Project requirements
+override globally active versions; global versions provide a fallback outside
+configured projects.
 
-## Completions
+Shims do not install missing versions. Prepare each project with:
 
-Generate completions without modifying shell profiles:
+```bash
+jolter sync
+```
+
+See [project resolution](project-resolution.md) for precedence details.
+
+## Custom Storage
+
+Set `JOLTER_HOME` before running Jolter:
+
+Bash or Zsh:
+
+```bash
+export JOLTER_HOME="$HOME/.local/share/jolter"
+jolter setup
+```
+
+PowerShell:
+
+```powershell
+$env:JOLTER_HOME = "$HOME\AppData\Local\Jolter"
+jolter setup
+```
+
+The setting must be consistent across setup, interactive shells, IDEs, and CI.
+Changing it points Jolter at a different set of shims, installations, cache,
+and active versions.
+
+## IDE Terminals and GUI Applications
+
+An IDE launched before a persistent `PATH` update can retain the old
+environment. Restart the entire application, not only its integrated terminal.
+
+GUI applications on macOS and Linux may not read interactive shell profiles.
+Use the environment configuration supported by the application or operating
+system, then confirm command resolution inside the application terminal.
+
+## Shell Completions
+
+Generate a completion script:
 
 ```bash
 jolter completions bash
@@ -73,6 +188,23 @@ jolter completions elvish
 jolter completions powershell
 ```
 
-Redirect the output into the completion location used by the selected shell.
-Command Prompt does not provide a comparable native programmable-completion
-interface.
+The script is written to standard output. Redirect it to the completion
+directory recommended by the shell, or source it from a profile managed by the
+user. Jolter does not modify profiles automatically.
+
+Command Prompt has no equivalent native programmable-completion integration.
+
+## Refreshing Setup
+
+Run setup again after:
+
+- upgrading or moving the Jolter executable;
+- changing `JOLTER_HOME`;
+- restoring storage from backup;
+- adding support for new shimmed commands in a future release;
+- diagnosing missing or stale shim files.
+
+```bash
+jolter setup
+jolter doctor
+```

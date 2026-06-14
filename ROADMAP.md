@@ -21,12 +21,12 @@ project-pin npm, pnpm, and Yarn versions. The main architecture described by
 the specification exists as a Rust workspace and the essential end-to-end
 workflow is functional.
 
-Jolter now includes the stable-core command surface, deeper diagnostics,
-storage lifecycle commands, CI setup, release workflows, and measured coverage
-above the specification target. It remains pre-1.0 until the configured native,
-WSL, provider-smoke, audit, and release workflows have passed through a
-release-candidate period. The plugin and extended-tool manifest remain
-explicitly post-stable work.
+Jolter now includes the stable-core command surface, multiple pinned tools,
+active-version updates, deeper diagnostics, storage lifecycle commands, CI
+setup, release workflows, and measured coverage above the specification
+target. It remains pre-1.0 until the configured native, WSL, provider-smoke,
+audit, and release workflows have passed through a release-candidate period.
+Additional tool providers and plugins remain explicitly post-stable work.
 
 ## Status Legend
 
@@ -73,13 +73,13 @@ Status: **Complete for current providers**
 - Cached release metadata with offline fallback.
 - `JOLTER_OFFLINE=1` support.
 - No downloaded executable is run during installation.
-- Installation manifests for runtimes and managed package managers.
+- Installation manifests for runtimes and managed tools.
 
-### Package Manager Management
+### Tool Management
 
 Status: **Complete for npm, pnpm, and Yarn alpha workflows**
 
-- `jolter.json` package manager requirements.
+- `jolter.json` tool requirements.
 - `package.json#packageManager` discovery.
 - npm installation from the official npm registry package.
 - pnpm installation from the official npm registry package.
@@ -92,16 +92,16 @@ Status: **Complete for npm, pnpm, and Yarn alpha workflows**
 - Verified, cached, atomic installation under `~/.jolter/tools/`.
 - Project-aware dispatch through the `npm`, `npx`, `pnpm`, and `yarn` shims.
 - Manual installation and global activation through `jolter use`.
-- Exact active package manager persistence and inventory markers.
-- Package manager synchronization and repair.
+- Exact active tool persistence and inventory markers.
+- Multi-tool synchronization and repair.
 - Doctor checks for matching managed installations.
 
 Known limitations:
 
 - npm registry selection is currently fixed to the public official registry.
-- Package manager version execution is not probed by `doctor`; Jolter validates
+- Tool version execution is probed by `doctor`; Jolter also validates
   the exact managed installation selected from verified metadata.
-- Bun's package manager is available through the Bun runtime, but it is not a
+- Bun's bundled package manager is available through the Bun runtime, but it is not a
   separately versioned managed tool.
 
 ### Project Configuration
@@ -111,9 +111,10 @@ Status: **Complete for the current schema**
 - Strict `jolter.json` parsing with unknown-field rejection.
 - Atomic configuration writes.
 - One runtime requirement per project.
-- One package manager requirement per project.
-- Runtime pinning through `jolter pin`.
-- Existing package manager configuration is preserved when pinning a runtime.
+- One runtime and multiple tool requirements per project.
+- Runtime and tool pinning through `jolter pin`.
+- Pinning preserves unrelated runtime and tool requirements.
+- Legacy `packageManager` input compatibility with canonical `tools` output.
 - Configuration discovery from nested project directories.
 
 Current schema:
@@ -124,8 +125,9 @@ Current schema:
   "runtime": {
     "node": "24.x"
   },
-  "packageManager": {
-    "pnpm": "10.x"
+  "tools": {
+    "pnpm": "10.x",
+    "yarn": "4.x"
   }
 }
 ```
@@ -140,26 +142,27 @@ Runtime priority:
 2. `.node-version`
 3. `.nvmrc`
 
-Package manager priority:
+Tool priority:
 
 1. `jolter.json`
 2. `package.json#packageManager`
 
-Runtime and package manager requirements are resolved independently, allowing a
-project to combine a Node version file with a package manager declaration in
+Runtime and tool requirements are resolved independently, allowing a
+project to combine a Node version file with a tool declaration in
 `package.json`.
 
 ### Commands
 
 | Command | Status | Current behavior |
 | --- | --- | --- |
-| `jolter use <tool>` | Complete | Installs or reuses a runtime or package manager, activates it, and installs shims. Package managers require active Node.js. |
-| `jolter pin <runtime>` | Complete | Writes the runtime requirement to `jolter.json`. |
+| `jolter use <tool>` | Complete | Installs or reuses a runtime or tool, activates it, and installs shims. Tools require active Node.js. |
+| `jolter pin <runtime-or-tool>` | Complete | Writes a runtime or tool requirement to `jolter.json` while preserving other entries. |
+| `jolter update [target]` | Complete | Updates an active runtime or tool within its major line, accepts explicit selectors, and supports `--all`. |
 | `jolter setup` | Complete | Installs shims and prints exact current-session and persistent `PATH` commands for PowerShell, Command Prompt, Bash, Zsh, and Fish. |
-| `jolter list` | Complete for current artifacts | Lists runtimes and managed package managers, active markers, paths, and readiness. |
+| `jolter list` | Complete for current artifacts | Lists runtimes and managed tools, active markers, paths, and readiness. |
 | `jolter doctor` | Complete for stable core | Probes versions, validates manifests and compatibility, detects conflicts, and emits remediation in text or JSON. |
-| `jolter repair` | Complete for current artifacts | Reinstalls incomplete runtime and package manager installations. |
-| `jolter sync` | Complete for current schema | Makes the runtime and package manager match project requirements. |
+| `jolter repair` | Complete for current artifacts | Reinstalls incomplete runtime and tool installations. |
+| `jolter sync` | Complete for current schema | Makes the runtime and tool match project requirements. |
 | `jolter uninstall <tool@version>` | Complete | Removes exact versions with active-toolchain protection and shared installer locks. |
 | `jolter prune` | Complete | Preserves active, project-required, and configured newest versions; supports dry runs. |
 | `jolter cache status/clean` | Complete | Inspects and safely cleans metadata and artifact caches. |
@@ -172,9 +175,9 @@ Status: **Complete for invocation-time switching**
 
 - Self-shims for `node`, `npm`, `npx`, `pnpm`, `yarn`, `bun`, and `deno`.
 - Runtime selection is evaluated whenever a shim runs.
-- Project requirements override globally active runtime and package manager
+- Project requirements override globally active runtime and tool
   versions.
-- Managed package manager entry points run through the selected Node.js
+- Managed tool entry points run through the selected Node.js
   runtime.
 - No shell hook is required for command switching after the shims directory is
   on `PATH`.
@@ -192,7 +195,7 @@ Release validation:
 Status: **Complete for stable-core commands**
 
 - Distinct `[jolter]`, `[done]`, `[warn]`, and `[fail]` output vocabulary.
-- Single-line interactive progress for runtime and package manager downloads.
+- Single-line interactive progress for runtime and tool downloads.
 - Current resolve, connect, fetch, verify, unpack, install, activate, remove,
   clean, configure, doctor, and shim actions.
 - Download bytes, known-length percentage, and transfer rate.
@@ -237,17 +240,17 @@ Implemented checks:
 - storage location
 - project configuration resolution
 - matching runtime installation
-- matching managed package manager installation
+- matching managed tool installation
 - installed shim set
 - shims directory presence on `PATH`
 - machine-readable JSON output with overall health
-- bounded runtime and package-manager `--version` execution
+- bounded runtime and tool `--version` execution
 - installation manifest identity and integrity metadata
 - unrecognized cache entries
 - conflicting Node/version-manager executables earlier on `PATH`
 - unsupported CPU and operating system guidance
 - writable storage and executable permissions
-- Node/package-manager engine compatibility
+- Node/tool engine compatibility
 - proxy and certificate environment diagnostics
 - offline cache readiness
 - actionable remediation in human-readable and JSON output
@@ -277,7 +280,7 @@ Implemented:
 - concurrent same-version installation regression coverage
 - bounded provider retry tests
 - progress event, byte count, cache reuse, and CLI output-mode tests
-- measured line coverage of 82.14%
+- measured line coverage of 81.95%
 - CI enforcement of the 80% line-coverage target
 - dependency vulnerability auditing
 - tagged release archives and SHA-256 files
@@ -295,18 +298,18 @@ Remaining research:
 | Node.js management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
 | Bun management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
 | Deno management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
-| Package manager management | Complete for alpha | npm, pnpm, and Yarn are installed, globally activated, project-selected, and dispatched with engine and optional Corepack hash validation. |
-| Project pinning | Complete | Runtime pinning is implemented. |
+| Tool management | Complete for built-in providers | npm, pnpm, and Yarn are installed, globally activated, project-selected, and dispatched with engine and optional Corepack hash validation. |
+| Project pinning | Complete | Runtime and multiple tool requirements can be pinned independently. |
 | Automatic switching | Complete for commands | Self-shims resolve the project on every invocation. |
-| Reproducible sync | Complete for current schema | Runtime and package manager selectors are synchronized. |
+| Reproducible sync | Complete for current schema | Runtime and tool selectors are synchronized. |
 | Doctor | Complete for stable core | Version probes, manifests, engine checks, conflicts, cache, permissions, environment, and remediation are implemented. |
 | Repair | Complete for current artifacts | Incomplete runtime and tool directories are replaced safely. |
 | Security requirements | Complete for current providers | HTTPS, integrity checks, bounded extraction, and no telemetry. |
 | Telemetry | Complete by absence | No telemetry is collected. Opt-in telemetry is not implemented. |
 | Cross-platform support | Release validation | Native and WSL workflows are configured; passing hosted runs are required before 1.0. |
-| 80% coverage target | Complete | Measured line coverage is 82.14% and CI fails below 80%. |
-| Extended tools manifest | Future | Deferred until after the package manager core stabilizes. |
-| CI setup command | Planned | No implementation yet. |
+| 80% coverage target | Complete | Measured line coverage is 81.95% and CI fails below 80%. |
+| Extended tool providers | Future | The `tools` manifest is implemented; providers beyond npm, pnpm, and Yarn remain future work. |
+| CI setup command | Complete | Synchronizes runtimes and tools and emits provider-neutral JSON plus GitHub Actions outputs. |
 | Plugin system | Future | Architecture boundaries help, but no public plugin API exists. |
 
 ## Release Roadmap
@@ -345,7 +348,7 @@ Exit criteria met:
 - corrupt partial installations are detected and repairable.
 - installed runtimes are never published before verification completes.
 
-### Milestone 2: Project Switching and Package Managers
+### Milestone 2: Project Switching and Tools
 
 Status: **Complete for alpha**
 
@@ -353,20 +356,20 @@ Delivered:
 
 - project-aware self-shims.
 - runtime source priority.
-- package manager source priority.
+- tool source priority.
 - managed npm, pnpm, and Yarn installation.
-- manual package manager activation through `jolter use`.
+- manual tool activation through `jolter use`.
 - SHA-512 npm package integrity.
-- Node-mediated package manager dispatch.
-- package manager sync, repair, and doctor reporting.
+- Node-mediated tool dispatch.
+- tool sync, repair, and doctor reporting.
 
 Exit criteria met:
 
 - a project can declare Node and pnpm/Yarn/npm requirements.
 - `jolter sync` installs both layers.
-- running a generated package manager shim selects the project Node runtime and
-  the matching managed package manager.
-- outside a project requirement, a generated package manager shim selects the
+- running a generated tool shim selects the project Node runtime and
+  the matching managed tool.
+- outside a project requirement, a generated tool shim selects the
   exact globally active managed version.
 - all downloads are integrity checked before publication.
 
@@ -378,14 +381,14 @@ Delivered:
 
 - `jolter setup` with automatic or explicit shell selection.
 - exact current-session and persistent `PATH` guidance.
-- runtime and managed package manager health in `jolter list`.
+- runtime and managed tool health in `jolter list`.
 - machine-readable `jolter doctor --json` output.
-- npm-style package-manager Node.js engine compatibility validation.
+- npm-style tool Node.js engine compatibility validation.
 - exact Corepack-style `packageManager` hash parsing and archive verification.
 
 Additional delivery:
 
-- runtime and package manager version probing with bounded execution;
+- runtime and tool version probing with bounded execution;
 - nvm, fnm, Volta, Corepack, and system executable precedence checks;
 - remediation actions in text and JSON findings;
 - offline cache and provider failure guidance;
@@ -397,7 +400,7 @@ Exit criteria:
   discovery.
 - doctor identifies common conflicts and gives an actionable repair command.
 - list output covers both runtimes and managed tools.
-- package manager declarations commonly generated by Corepack-compatible tools
+- tool declarations commonly generated by Corepack-compatible tools
   are accepted.
 
 ### Milestone 4: Cross-Platform Release Engineering
@@ -478,11 +481,11 @@ Delivered scope:
 - supports offline or prewarmed caches through the normal installer;
 - keeps provider integration in the CLI rather than core APIs.
 
-### Milestone 7: Extended Toolchain Manifest
+### Milestone 7: Extended Tool Providers
 
-Status: **Future**
+Status: **Manifest complete; providers future**
 
-Planned schema direction:
+Implemented schema:
 
 ```json
 {
@@ -491,16 +494,16 @@ Planned schema direction:
   },
   "tools": {
     "pnpm": "10.x",
-    "typescript": "5.x"
+    "yarn": "4.x"
   }
 }
 ```
 
-Design requirements:
+Remaining provider requirements:
 
-- preserve compatibility with `packageManager`.
+- preserve input compatibility with legacy `packageManager`.
 - distinguish executable tools from project dependencies.
-- define verified providers and entry points.
+- define verified providers and entry points for each new tool.
 - avoid turning Jolter into a package manager.
 - support deterministic tool resolution and shims.
 
@@ -542,7 +545,7 @@ Medium priority:
 
 Later:
 
-1. extended tool manifest.
+1. extended tool providers.
 2. plugin system.
 3. explicitly opt-in anonymous telemetry, only if the project decides it is
    useful and can document a privacy-preserving design.
@@ -560,9 +563,9 @@ Jolter depends on Node.js release metadata, GitHub release assets, and npm
 registry metadata. Provider schema changes must fail closed and produce clear
 diagnostics.
 
-### Package Manager Compatibility
+### Tool Compatibility
 
-Package-manager `engines.node` requirements are validated before installation
+Tool `engines.node` requirements are validated before installation
 and when reusing an installed tool. The remaining risk is incomplete or
 incorrect upstream metadata, which should remain visible as a provider error
 rather than producing a silently unusable toolchain.

@@ -1,146 +1,116 @@
 # Jolter
 
-Jolter is a Rust-based JavaScript toolchain manager for Node.js, Bun, Deno,
-and package managers.
+**One fast, reliable home for your JavaScript runtimes and tools.**
 
-Version `0.2.0` implements the stable-core command surface. The project remains
-pre-1.0 until its configured cross-platform and provider-smoke workflows have
-passed through a release-candidate period.
+Jolter keeps Node.js, Bun, Deno, npm, pnpm, and Yarn consistent across your
+machine, your team, and CI. Pin what a project needs once, enter the directory,
+and use the right toolchain without manually switching versions.
 
-## Working Features
+## Install
 
-- install Node.js, Bun, and Deno from official release sources
-- resolve `latest`, Node.js `lts`, and numeric selectors such as `24.x`
-- verify runtime archives with SHA-256 and registry packages with SHA-512
-- reject non-HTTPS downloads and redirects
-- install atomically under cross-process locks
-- cache verified archives and release metadata
-- pin project requirements in `jolter.json`
-- resolve `.node-version`, `.nvmrc`, and `package.json#packageManager`
-- install verified npm, pnpm, and Yarn versions from the npm registry
-- manually activate npm, pnpm, and Yarn versions through `jolter use`
-- accept exact Corepack descriptors with SHA-1 or SHA-2 hashes
-- validate package-manager Node.js engine requirements before installation
-- automatically select project runtimes through self-shims
-- dispatch managed package managers through the selected project Node.js
-- synchronize and repair project runtime installations
-- install shims and print exact shell-specific `PATH` setup commands
-- list runtimes and managed package managers with installation health
-- diagnose configuration, runtimes, package managers, shims, and `PATH`
-- probe installed versions with a bounded timeout and validate manifests
-- detect shadowing by system tools, nvm, fnm, Volta, and Corepack paths
-- emit machine-readable diagnostics with `jolter doctor --json`
-- uninstall exact versions, prune old versions, and clean caches safely
-- prepare project toolchains for CI with `jolter setup-ci`
-- generate Bash, Zsh, Fish, Elvish, and PowerShell completions
-- show live runtime and package-manager download progress with current actions
-- provide deterministic CI output through global terminal-control flags
-- enforce at least 80% line coverage in CI
+### Windows
 
-## Build
+Run in PowerShell:
 
-```bash
-cargo build --release
-cargo test --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
+```powershell
+irm https://jolter.dev/win/install | iex
 ```
 
-The executable is written to `target/release/jolter` or
-`target/release/jolter.exe`.
+### Linux and macOS
 
-## Usage
-
-Install and activate a runtime:
+Run in a terminal:
 
 ```bash
-jolter use node@24
+curl -fsSL https://jolter.dev/unix/install | sh
+```
+
+Then finish shell setup:
+
+```bash
+jolter setup
+```
+
+Apply the command Jolter prints, restart your terminal, and verify everything:
+
+```bash
+jolter doctor
+```
+
+See the [installation guide](docs/installation.md) for manual installation,
+checksums, source builds, upgrades, and platform details.
+
+## Your Toolchain, Ready
+
+Install the runtime you want:
+
+```bash
 jolter use node@lts
-jolter use bun@1.3
-jolter use deno@2
 ```
 
-Install and activate a package manager using the active Node.js runtime:
+Add the tools you prefer:
 
 ```bash
-jolter use npm@11
 jolter use pnpm@10
 jolter use yarn@4
 ```
 
-Pin and synchronize a project:
+Pin the project so everyone gets the same setup:
 
 ```bash
+cd my-project
 jolter pin node@24
+jolter pin pnpm@10
 jolter sync
-jolter doctor
 ```
 
-Set up command shims and receive instructions for the current shell:
+Jolter creates a small `jolter.json` file that can be committed with the
+project. Team members and CI can then reproduce the toolchain with one command.
 
-```bash
-jolter setup
-jolter setup --shell powershell
-jolter setup --shell bash
-```
+## Why Jolter
 
-Inspect installed toolchains or consume diagnostics as JSON:
+### Stop switching versions by hand
 
-```bash
-jolter list
-jolter list --json
-jolter doctor --json
-```
+Jolter automatically selects project versions through lightweight command
+shims. Move between repositories and `node`, `pnpm`, `yarn`, `bun`, and `deno`
+follow the project you are working in.
 
-Manage storage lifecycle:
+### Use one workflow everywhere
 
-```bash
-jolter uninstall node@24.1.0
-jolter prune --dry-run
-jolter prune --keep 2
-jolter cache status
-jolter cache clean
-```
+The same commands work on Windows, macOS, Linux, and WSL. Jolter understands
+its own project file as well as `.node-version`, `.nvmrc`, and
+`package.json#packageManager`.
 
-Prepare CI and generate shell completions:
+### Keep local development and CI aligned
 
-```bash
-jolter setup-ci --json
-jolter completions bash
-jolter completions powershell
-```
+`jolter sync` prepares a developer machine. `jolter setup-ci` prepares an
+automation job and exposes the resolved runtime, tools, shims, and cache
+location.
 
-Control terminal output globally:
+### Know when something is wrong
 
-```bash
-jolter use node@24 --no-progress
-jolter sync --no-color
-jolter setup-ci --quiet
-jolter use pnpm@10 --verbose
-```
+`jolter doctor` checks the project, installed versions, command routing,
+storage, network configuration, and offline readiness, then gives practical
+remediation steps.
 
-Interactive terminals receive a single updating `[jolter]` line with the current
-action, download bytes, percentage, and transfer rate. CI and redirected
-output automatically use stable line-oriented logs. Progress is written to
-standard error, while final results and JSON remain on standard output.
-ANSI color is emitted only when the terminal advertises support, so legacy
-Windows Command Prompt sessions automatically fall back to clean plain text.
-The `list` command calculates its status and path columns from the installed
-tool names instead of relying on terminal tab stops.
+### Install with confidence
 
-`setup`, `use`, `sync`, and `repair` generate shims for `node`, `npm`, `npx`,
-`pnpm`, `yarn`, `bun`, and `deno` in the Jolter shims directory:
+Jolter downloads from official providers, verifies release integrity, rejects
+insecure redirects, extracts into temporary locations, and publishes complete
+installations atomically.
 
-```text
-Windows: %USERPROFILE%\.jolter\shims
-macOS/Linux: $HOME/.jolter/shims
-```
+## Supported Toolchains
 
-Shims resolve `jolter.json`, `.node-version`, or `.nvmrc` whenever they run,
-so changing directories does not require a shell hook.
+| Category | Supported |
+| --- | --- |
+| Runtimes | Node.js, Bun, Deno |
+| Tools | npm, pnpm, Yarn |
+| Platforms | Windows x64, Linux x64, macOS x64, macOS ARM64, WSL |
+| Shells | PowerShell, Command Prompt, Bash, Zsh, Fish |
 
-See [shell setup](docs/setup.md) for supported shells and persistence behavior.
+Tools run through the selected Node.js version, so Jolter also checks their
+declared Node.js compatibility before activation.
 
-## Configuration
+## Project Configuration
 
 ```json
 {
@@ -148,38 +118,91 @@ See [shell setup](docs/setup.md) for supported shells and persistence behavior.
   "runtime": {
     "node": "24.x"
   },
-  "packageManager": {
-    "pnpm": "10.x"
+  "tools": {
+    "pnpm": "10.x",
+    "yarn": "4.x"
   }
 }
 ```
 
-Package-manager requirements for npm, pnpm, and Yarn are installed into
-`~/.jolter/tools` and selected by the generated shims. A project requirement
-has priority over a globally active version selected with `jolter use`. Jolter
-verifies npm registry packages with their SHA-512 integrity metadata and checks
-the additional hash when `packageManager` uses an exact Corepack descriptor
-such as `pnpm@10.12.1+sha224.<hash>`. The selected package manager must also
-support the selected Node.js version according to its `engines.node` range.
+A project can select one runtime and multiple tools. Selectors can describe an
+exact version, a release line such as `24` or `24.x`, `latest`, or Node.js
+`lts`.
 
-## Environment
+Learn more in [configuration](docs/configuration.md) and
+[project resolution](docs/project-resolution.md).
 
-- `JOLTER_HOME` overrides the default `~/.jolter` storage location.
-- `JOLTER_OFFLINE=1` disables metadata requests and requires cached metadata
-  and archives.
-- `JOLTER_NO_PROGRESS=1` disables in-place progress updates.
-- `JOLTER_NO_COLOR=1` and the standard `NO_COLOR` variable disable ANSI color.
+## Everyday Commands
 
-See [shell setup](docs/setup.md), [diagnostics](docs/diagnostics.md),
-[the architecture notes](docs/architecture.md), and the
-[security model](docs/security.md) for implementation details. The
-[project roadmap](ROADMAP.md) records feature status, known gaps, and release
-milestones.
+```bash
+# Install and activate
+jolter use node@lts
+jolter use pnpm@10
 
-Additional guides:
+# Save project requirements
+jolter pin node@24
+jolter pin pnpm@10
 
-- [installation](docs/installation.md)
+# Reproduce or repair a project
+jolter sync
+jolter repair
+
+# Update active versions
+jolter update node
+jolter update --all
+
+# Inspect health and installed versions
+jolter doctor
+jolter list
+
+# Safely reclaim space
+jolter prune --dry-run
+jolter cache status
+```
+
+See the [complete command reference](docs/commands.md) for every command,
+argument, output mode, and exit behavior.
+
+## Built for Automation
+
+Jolter automatically switches to stable line-oriented logs when output is
+redirected or a CI environment is detected.
+
+```bash
+jolter setup-ci --no-progress
+jolter setup-ci --json --no-color
+```
+
+Use `--quiet` for final results only, `--verbose` for transfer details, and
+`--no-progress` for deterministic logs. Machine-readable output is available
+for inventory, diagnostics, and CI setup.
+
+Read the [CI guide](docs/ci.md) and
+[output and automation reference](docs/output-and-automation.md).
+
+## Documentation
+
+Start at the [documentation home](docs/README.md).
+
+- [Getting started](docs/getting-started.md)
+- [Installation](docs/installation.md)
+- [Command reference](docs/commands.md)
+- [Configuration](docs/configuration.md)
+- [Runtimes and tools](docs/runtimes-and-tools.md)
+- [Shell setup and automatic switching](docs/setup.md)
 - [CI integration](docs/ci.md)
-- [storage lifecycle](docs/lifecycle.md)
-- [compatibility policy](docs/compatibility.md)
-- [troubleshooting](docs/troubleshooting.md)
+- [Environment variables](docs/environment.md)
+- [Diagnostics](docs/diagnostics.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Security model](docs/security.md)
+- [Architecture](docs/architecture.md)
+
+## Project Status
+
+Jolter `0.2.0` provides the stable core command surface and remains pre-1.0
+while its cross-platform release and real-provider workflows complete a
+release-candidate period. Compatibility commitments and known release work are
+documented in the [compatibility policy](docs/compatibility.md) and
+[roadmap](ROADMAP.md).
+
+Jolter is open source under the [MIT License](LICENSE).

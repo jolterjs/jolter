@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind};
+use jolter_runtime::{RuntimeKind, ToolKind, ToolRequest};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -78,19 +78,19 @@ impl Storage {
     }
 
     #[must_use]
-    pub fn tool_dir(&self, kind: PackageManagerKind) -> PathBuf {
+    pub fn tool_dir(&self, kind: ToolKind) -> PathBuf {
         self.tools_dir().join(kind.to_string())
     }
 
     #[must_use]
-    pub fn tool_version_dir(&self, kind: PackageManagerKind, version: &Version) -> PathBuf {
+    pub fn tool_version_dir(&self, kind: ToolKind, version: &Version) -> PathBuf {
         self.tool_dir(kind).join(version.to_string())
     }
 
     #[must_use]
     pub fn tool_entrypoint(
         &self,
-        kind: PackageManagerKind,
+        kind: ToolKind,
         version: &Version,
         command: &str,
     ) -> Option<PathBuf> {
@@ -125,7 +125,7 @@ impl Storage {
             let path = self.runtime_dir(kind);
             fs::create_dir_all(&path).map_err(|source| StorageError::Create { path, source })?;
         }
-        for kind in PackageManagerKind::ALL {
+        for kind in ToolKind::ALL {
             let path = self.tool_dir(kind);
             fs::create_dir_all(&path).map_err(|source| StorageError::Create { path, source })?;
         }
@@ -193,7 +193,7 @@ impl Storage {
 
     pub fn installed_tools(&self) -> Result<Vec<InstalledTool>, StorageError> {
         let mut installed = Vec::new();
-        for kind in PackageManagerKind::ALL {
+        for kind in ToolKind::ALL {
             let directory = self.tool_dir(kind);
             if !directory.exists() {
                 continue;
@@ -237,7 +237,7 @@ impl Storage {
 
     pub fn find_matching_tool(
         &self,
-        request: &PackageManagerRequest,
+        request: &ToolRequest,
     ) -> Result<Option<InstalledTool>, StorageError> {
         Ok(self.installed_tools()?.into_iter().rev().find(|tool| {
             tool.kind == request.kind
@@ -267,18 +267,11 @@ impl Storage {
             .transpose()
     }
 
-    pub fn activate_tool(
-        &self,
-        kind: PackageManagerKind,
-        version: &Version,
-    ) -> Result<(), StorageError> {
+    pub fn activate_tool(&self, kind: ToolKind, version: &Version) -> Result<(), StorageError> {
         self.write_active_version(kind.to_string(), version)
     }
 
-    pub fn active_tool_version(
-        &self,
-        kind: PackageManagerKind,
-    ) -> Result<Option<Version>, StorageError> {
+    pub fn active_tool_version(&self, kind: ToolKind) -> Result<Option<Version>, StorageError> {
         let active = self.read_active_versions()?;
         active
             .versions
@@ -303,7 +296,7 @@ impl Storage {
 
     pub fn deactivate_tool(
         &self,
-        kind: PackageManagerKind,
+        kind: ToolKind,
         expected: Option<&Version>,
     ) -> Result<bool, StorageError> {
         self.remove_active_version(&kind.to_string(), expected)
@@ -388,7 +381,7 @@ impl InstalledRuntime {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledTool {
-    pub kind: PackageManagerKind,
+    pub kind: ToolKind,
     pub version: Version,
     pub path: PathBuf,
 }
@@ -574,9 +567,9 @@ pub enum StorageError {
         #[source]
         source: semver::Error,
     },
-    #[error("active {kind} package manager version `{value}` is invalid: {source}")]
+    #[error("active {kind} tool version `{value}` is invalid: {source}")]
     InvalidActiveToolVersion {
-        kind: PackageManagerKind,
+        kind: ToolKind,
         value: String,
         #[source]
         source: semver::Error,
@@ -599,7 +592,7 @@ mod tests {
         assert!(storage.runtime_dir(RuntimeKind::Bun).is_dir());
         assert!(storage.runtime_dir(RuntimeKind::Deno).is_dir());
         assert!(storage.shims_dir().is_dir());
-        assert!(storage.tool_dir(PackageManagerKind::Pnpm).is_dir());
+        assert!(storage.tool_dir(ToolKind::Pnpm).is_dir());
     }
 
     #[test]
@@ -640,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn persists_active_package_manager_versions_alongside_runtimes() {
+    fn persists_active_tool_versions_alongside_runtimes() {
         let temp = tempfile::tempdir().unwrap();
         let storage = Storage::new(temp.path());
         storage.ensure_layout().unwrap();
@@ -649,7 +642,7 @@ mod tests {
             .activate(RuntimeKind::Node, &Version::new(24, 2, 0))
             .unwrap();
         storage
-            .activate_tool(PackageManagerKind::Pnpm, &Version::new(10, 2, 0))
+            .activate_tool(ToolKind::Pnpm, &Version::new(10, 2, 0))
             .unwrap();
 
         assert_eq!(
@@ -657,22 +650,15 @@ mod tests {
             Some(Version::new(24, 2, 0))
         );
         assert_eq!(
-            storage
-                .active_tool_version(PackageManagerKind::Pnpm)
-                .unwrap(),
+            storage.active_tool_version(ToolKind::Pnpm).unwrap(),
             Some(Version::new(10, 2, 0))
         );
         assert!(
             storage
-                .deactivate_tool(PackageManagerKind::Pnpm, Some(&Version::new(10, 2, 0)))
+                .deactivate_tool(ToolKind::Pnpm, Some(&Version::new(10, 2, 0)))
                 .unwrap()
         );
-        assert_eq!(
-            storage
-                .active_tool_version(PackageManagerKind::Pnpm)
-                .unwrap(),
-            None
-        );
+        assert_eq!(storage.active_tool_version(ToolKind::Pnpm).unwrap(), None);
         assert_eq!(
             storage.active_version(RuntimeKind::Node).unwrap(),
             Some(Version::new(24, 2, 0))
@@ -686,7 +672,7 @@ mod tests {
         storage.ensure_layout().unwrap();
         for version in [Version::new(10, 1, 0), Version::new(10, 2, 0)] {
             let entrypoint = storage
-                .tool_entrypoint(PackageManagerKind::Pnpm, &version, "pnpm")
+                .tool_entrypoint(ToolKind::Pnpm, &version, "pnpm")
                 .unwrap();
             fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
             fs::write(entrypoint, b"pnpm").unwrap();
@@ -768,12 +754,12 @@ mod tests {
         storage.ensure_layout().unwrap();
         let complete = Version::new(10, 2, 0);
         let entrypoint = storage
-            .tool_entrypoint(PackageManagerKind::Pnpm, &complete, "pnpm")
+            .tool_entrypoint(ToolKind::Pnpm, &complete, "pnpm")
             .unwrap();
         fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
         fs::write(entrypoint, b"pnpm").unwrap();
-        fs::create_dir_all(storage.tool_dir(PackageManagerKind::Yarn).join("4.1.0")).unwrap();
-        fs::create_dir_all(storage.tool_dir(PackageManagerKind::Npm).join("partial")).unwrap();
+        fs::create_dir_all(storage.tool_dir(ToolKind::Yarn).join("4.1.0")).unwrap();
+        fs::create_dir_all(storage.tool_dir(ToolKind::Npm).join("partial")).unwrap();
 
         let installed = storage.installed_tools().unwrap();
 

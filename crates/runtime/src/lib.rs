@@ -11,13 +11,13 @@ pub enum RuntimeKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PackageManagerKind {
+pub enum ToolKind {
     Npm,
     Pnpm,
     Yarn,
 }
 
-impl PackageManagerKind {
+impl ToolKind {
     pub const ALL: [Self; 3] = [Self::Npm, Self::Pnpm, Self::Yarn];
 
     #[must_use]
@@ -41,7 +41,7 @@ impl PackageManagerKind {
     }
 }
 
-impl fmt::Display for PackageManagerKind {
+impl fmt::Display for ToolKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Npm => "npm",
@@ -51,17 +51,15 @@ impl fmt::Display for PackageManagerKind {
     }
 }
 
-impl FromStr for PackageManagerKind {
-    type Err = PackageManagerRequestError;
+impl FromStr for ToolKind {
+    type Err = ToolRequestError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
             "npm" => Ok(Self::Npm),
             "pnpm" => Ok(Self::Pnpm),
             "yarn" | "yarnpkg" => Ok(Self::Yarn),
-            _ => Err(PackageManagerRequestError::UnsupportedPackageManager(
-                value.to_owned(),
-            )),
+            _ => Err(ToolRequestError::UnsupportedTool(value.to_owned())),
         }
     }
 }
@@ -173,14 +171,14 @@ impl FromStr for RuntimeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackageManagerRequest {
-    pub kind: PackageManagerKind,
+pub struct ToolRequest {
+    pub kind: ToolKind,
     pub selector: String,
-    pub hash: Option<PackageManagerHash>,
+    pub hash: Option<ToolHash>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackageManagerHashAlgorithm {
+pub enum ToolHashAlgorithm {
     Sha1,
     Sha224,
     Sha256,
@@ -188,7 +186,7 @@ pub enum PackageManagerHashAlgorithm {
     Sha512,
 }
 
-impl PackageManagerHashAlgorithm {
+impl ToolHashAlgorithm {
     #[must_use]
     pub const fn hex_length(self) -> usize {
         match self {
@@ -201,7 +199,7 @@ impl PackageManagerHashAlgorithm {
     }
 }
 
-impl fmt::Display for PackageManagerHashAlgorithm {
+impl fmt::Display for ToolHashAlgorithm {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Sha1 => "sha1",
@@ -213,8 +211,8 @@ impl fmt::Display for PackageManagerHashAlgorithm {
     }
 }
 
-impl FromStr for PackageManagerHashAlgorithm {
-    type Err = PackageManagerRequestError;
+impl FromStr for ToolHashAlgorithm {
+    type Err = ToolRequestError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
@@ -223,41 +221,34 @@ impl FromStr for PackageManagerHashAlgorithm {
             "sha256" => Ok(Self::Sha256),
             "sha384" => Ok(Self::Sha384),
             "sha512" => Ok(Self::Sha512),
-            _ => Err(PackageManagerRequestError::UnsupportedHashAlgorithm(
-                value.to_owned(),
-            )),
+            _ => Err(ToolRequestError::UnsupportedHashAlgorithm(value.to_owned())),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackageManagerHash {
-    pub algorithm: PackageManagerHashAlgorithm,
+pub struct ToolHash {
+    pub algorithm: ToolHashAlgorithm,
     pub value: String,
 }
 
-impl fmt::Display for PackageManagerHash {
+impl fmt::Display for ToolHash {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}.{}", self.algorithm, self.value)
     }
 }
 
-impl PackageManagerRequest {
-    pub fn new(
-        kind: PackageManagerKind,
-        selector: impl Into<String>,
-    ) -> Result<Self, PackageManagerRequestError> {
+impl ToolRequest {
+    pub fn new(kind: ToolKind, selector: impl Into<String>) -> Result<Self, ToolRequestError> {
         let selector = selector.into();
         let selector = selector.trim().trim_start_matches('v');
         if selector.is_empty() {
-            return Err(PackageManagerRequestError::MissingSelector);
+            return Err(ToolRequestError::MissingSelector);
         }
         if selector.contains(char::is_whitespace) || selector.contains('@') {
-            return Err(PackageManagerRequestError::InvalidSelector(
-                selector.to_owned(),
-            ));
+            return Err(ToolRequestError::InvalidSelector(selector.to_owned()));
         }
-        let (selector, hash) = parse_package_manager_selector(selector)?;
+        let (selector, hash) = parse_tool_selector(selector)?;
 
         Ok(Self {
             kind,
@@ -272,7 +263,7 @@ impl PackageManagerRequest {
     }
 }
 
-impl fmt::Display for PackageManagerRequest {
+impl fmt::Display for ToolRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}@{}", self.kind, self.selector)?;
         if let Some(hash) = &self.hash {
@@ -282,13 +273,13 @@ impl fmt::Display for PackageManagerRequest {
     }
 }
 
-impl FromStr for PackageManagerRequest {
-    type Err = PackageManagerRequestError;
+impl FromStr for ToolRequest {
+    type Err = ToolRequestError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let (kind, selector) = value
             .rsplit_once('@')
-            .ok_or(PackageManagerRequestError::MissingSeparator)?;
+            .ok_or(ToolRequestError::MissingSeparator)?;
         Self::new(kind.parse()?, selector)
     }
 }
@@ -308,24 +299,24 @@ pub enum RuntimeRequestError {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum PackageManagerRequestError {
-    #[error("package manager request must use the form <manager>@<version>, for example pnpm@10")]
+pub enum ToolRequestError {
+    #[error("tool request must use the form <tool>@<version>, for example pnpm@10")]
     MissingSeparator,
-    #[error("package manager selector cannot be empty")]
+    #[error("tool selector cannot be empty")]
     MissingSelector,
-    #[error("unsupported package manager `{0}`; expected npm, pnpm, or yarn")]
-    UnsupportedPackageManager(String),
-    #[error("invalid package manager selector `{0}`")]
+    #[error("unsupported tool `{0}`; expected npm, pnpm, or yarn")]
+    UnsupportedTool(String),
+    #[error("invalid tool selector `{0}`")]
     InvalidSelector(String),
-    #[error("package manager hashes require an exact semantic version")]
+    #[error("tool hashes require an exact semantic version")]
     HashRequiresExactVersion,
-    #[error("package manager hash must use <algorithm>.<hex>")]
+    #[error("tool hash must use <algorithm>.<hex>")]
     InvalidHashFormat,
-    #[error("unsupported package manager hash algorithm `{0}`")]
+    #[error("unsupported tool hash algorithm `{0}`")]
     UnsupportedHashAlgorithm(String),
-    #[error("invalid {algorithm} package manager hash `{value}`")]
+    #[error("invalid {algorithm} tool hash `{value}`")]
     InvalidHash {
-        algorithm: PackageManagerHashAlgorithm,
+        algorithm: ToolHashAlgorithm,
         value: String,
     },
 }
@@ -371,42 +362,38 @@ fn validate_numeric_selector(selector: &str) -> Result<(), ()> {
     Ok(())
 }
 
-fn parse_package_manager_selector(
-    value: &str,
-) -> Result<(&str, Option<PackageManagerHash>), PackageManagerRequestError> {
+fn parse_tool_selector(value: &str) -> Result<(&str, Option<ToolHash>), ToolRequestError> {
     let mut parts = value.split('+');
-    let selector = parts
-        .next()
-        .ok_or(PackageManagerRequestError::MissingSelector)?;
+    let selector = parts.next().ok_or(ToolRequestError::MissingSelector)?;
     let hash = parts.next();
     if parts.next().is_some() {
-        return Err(PackageManagerRequestError::InvalidHashFormat);
+        return Err(ToolRequestError::InvalidHashFormat);
     }
     validate_numeric_selector(selector)
-        .map_err(|()| PackageManagerRequestError::InvalidSelector(selector.to_owned()))?;
+        .map_err(|()| ToolRequestError::InvalidSelector(selector.to_owned()))?;
     let Some(hash) = hash else {
         return Ok((selector, None));
     };
     let exact = Version::parse(selector)
         .is_ok_and(|version| version.pre.is_empty() && version.build.is_empty());
     if !exact {
-        return Err(PackageManagerRequestError::HashRequiresExactVersion);
+        return Err(ToolRequestError::HashRequiresExactVersion);
     }
     let (algorithm, value) = hash
         .split_once('.')
-        .ok_or(PackageManagerRequestError::InvalidHashFormat)?;
-    let algorithm: PackageManagerHashAlgorithm = algorithm.parse()?;
+        .ok_or(ToolRequestError::InvalidHashFormat)?;
+    let algorithm: ToolHashAlgorithm = algorithm.parse()?;
     if value.len() != algorithm.hex_length()
         || !value.chars().all(|character| character.is_ascii_hexdigit())
     {
-        return Err(PackageManagerRequestError::InvalidHash {
+        return Err(ToolRequestError::InvalidHash {
             algorithm,
             value: value.to_owned(),
         });
     }
     Ok((
         selector,
-        Some(PackageManagerHash {
+        Some(ToolHash {
             algorithm,
             value: value.to_ascii_lowercase(),
         }),
@@ -506,28 +493,24 @@ mod tests {
     }
 
     #[test]
-    fn parses_and_matches_package_manager_requests() {
-        let request: PackageManagerRequest = "pnpm@10.x".parse().unwrap();
-        assert_eq!(request.kind, PackageManagerKind::Pnpm);
+    fn parses_and_matches_tool_requests() {
+        let request: ToolRequest = "pnpm@10.x".parse().unwrap();
+        assert_eq!(request.kind, ToolKind::Pnpm);
         assert_eq!(request.hash, None);
         assert!(request.matches_version(&Version::new(10, 34, 3)));
         assert!(!request.matches_version(&Version::new(11, 0, 0)));
-        assert!(
-            "@yarnpkg/cli-dist@4"
-                .parse::<PackageManagerRequest>()
-                .is_err()
-        );
+        assert!("@yarnpkg/cli-dist@4".parse::<ToolRequest>().is_err());
     }
 
     #[test]
-    fn parses_corepack_package_manager_hashes() {
+    fn parses_corepack_tool_hashes() {
         let value = format!("pnpm@10.2.0+sha224.{}", "A".repeat(56));
-        let request: PackageManagerRequest = value.parse().unwrap();
+        let request: ToolRequest = value.parse().unwrap();
 
         assert_eq!(request.selector, "10.2.0");
         assert_eq!(
             request.hash.as_ref().unwrap().algorithm,
-            PackageManagerHashAlgorithm::Sha224
+            ToolHashAlgorithm::Sha224
         );
         assert_eq!(request.hash.as_ref().unwrap().value, "a".repeat(56));
         assert_eq!(
@@ -539,16 +522,16 @@ mod tests {
     #[test]
     fn rejects_invalid_corepack_hashes() {
         assert!(matches!(
-            format!("pnpm@10+sha224.{}", "a".repeat(56)).parse::<PackageManagerRequest>(),
-            Err(PackageManagerRequestError::HashRequiresExactVersion)
+            format!("pnpm@10+sha224.{}", "a".repeat(56)).parse::<ToolRequest>(),
+            Err(ToolRequestError::HashRequiresExactVersion)
         ));
         assert!(matches!(
-            "pnpm@10.2.0+md5.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse::<PackageManagerRequest>(),
-            Err(PackageManagerRequestError::UnsupportedHashAlgorithm(_))
+            "pnpm@10.2.0+md5.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse::<ToolRequest>(),
+            Err(ToolRequestError::UnsupportedHashAlgorithm(_))
         ));
         assert!(matches!(
-            "pnpm@10.2.0+sha224.deadbeef".parse::<PackageManagerRequest>(),
-            Err(PackageManagerRequestError::InvalidHash { .. })
+            "pnpm@10.2.0+sha224.deadbeef".parse::<ToolRequest>(),
+            Err(ToolRequestError::InvalidHash { .. })
         ));
     }
 }

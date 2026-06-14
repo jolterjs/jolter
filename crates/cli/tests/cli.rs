@@ -42,6 +42,32 @@ fn pin_writes_project_configuration() {
 }
 
 #[test]
+fn pin_writes_multiple_tools_to_canonical_configuration() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+
+    for target in ["node@24", "pnpm@10", "yarn@4"] {
+        let output = jolter_command(project.path(), home.path())
+            .args(["pin", target])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{target} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(project.path().join("jolter.json")).unwrap())
+            .unwrap();
+    assert_eq!(value["runtime"]["node"], "24");
+    assert_eq!(value["tools"]["pnpm"], "10");
+    assert_eq!(value["tools"]["yarn"], "4");
+    assert!(value.get("packageManager").is_none());
+}
+
+#[test]
 fn global_output_flags_control_operational_logging() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
@@ -80,10 +106,101 @@ fn help_documents_terminal_output_controls() {
     assert!(stdout.contains("--no-color"));
     assert!(stdout.contains("--quiet"));
     assert!(stdout.contains("--verbose"));
+    assert!(stdout.contains("update"));
 }
 
 #[test]
-fn use_activates_an_installed_package_manager() {
+fn update_requires_an_active_version_for_a_bare_target() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+
+    let output = jolter_command(project.path(), home.path())
+        .args(["update", "node"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no active node version"));
+}
+
+#[test]
+fn update_all_is_a_noop_without_active_versions() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+
+    let output = jolter_command(project.path(), home.path())
+        .args(["update", "--all"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("No active runtimes or tools to update")
+    );
+}
+
+#[test]
+fn update_accepts_an_exact_installed_runtime_without_network() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let executable = runtime_executable(home.path(), "node", "24.1.0");
+    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    fs::write(executable, b"node").unwrap();
+
+    let output = jolter_command(project.path(), home.path())
+        .args(["update", "node@24.1.0"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Installed and activated node@24.1.0")
+    );
+}
+
+#[test]
+fn update_accepts_an_exact_installed_tool_without_network() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let node = runtime_executable(home.path(), "node", "24.1.0");
+    fs::create_dir_all(node.parent().unwrap()).unwrap();
+    fs::write(node, b"node").unwrap();
+    let active = home.path().join("config").join("active.json");
+    fs::create_dir_all(active.parent().unwrap()).unwrap();
+    fs::write(&active, r#"{"node":"24.1.0"}"#).unwrap();
+    let pnpm = home
+        .path()
+        .join("tools")
+        .join("pnpm")
+        .join("10.2.0")
+        .join("bin")
+        .join("pnpm.cjs");
+    fs::create_dir_all(pnpm.parent().unwrap()).unwrap();
+    fs::write(pnpm, b"pnpm").unwrap();
+
+    let output = jolter_command(project.path(), home.path())
+        .args(["update", "pnpm@10.2.0"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("pnpm@10.2.0"));
+    let active: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(active).unwrap()).unwrap();
+    assert_eq!(active["node"], "24.1.0");
+    assert_eq!(active["pnpm"], "10.2.0");
+}
+
+#[test]
+fn use_activates_an_installed_tool() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let node = runtime_executable(home.path(), "node", "24.1.0");
@@ -112,9 +229,7 @@ fn use_activates_an_installed_package_manager() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Activated package manager pnpm@10.2.0")
-    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Activated tool pnpm@10.2.0"));
     let active: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(active).unwrap()).unwrap();
     assert_eq!(active["node"], "24.1.0");
@@ -152,7 +267,7 @@ fn list_reports_installed_runtime_directories() {
 }
 
 #[test]
-fn list_reports_managed_package_managers_and_health() {
+fn list_reports_managed_tools_and_health() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let pnpm = home
@@ -177,7 +292,7 @@ fn list_reports_managed_package_managers_and_health() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Package managers:"));
+    assert!(stdout.contains("Tools:"));
     assert!(stdout.contains("pnpm@10.2.0"));
     assert!(stdout.contains("yarn@4.1.0"));
     assert!(stdout.contains("[ready]"));
@@ -511,6 +626,8 @@ fn list_can_emit_machine_readable_inventory() {
     assert_eq!(value["runtimes"][0]["kind"], "node");
     assert_eq!(value["runtimes"][0]["version"], "24.1.0");
     assert_eq!(value["runtimes"][0]["ready"], true);
+    assert!(value["tools"].is_array());
+    assert!(value.get("packageManagers").is_none());
 }
 
 #[test]
@@ -539,6 +656,7 @@ fn setup_ci_emits_exact_resolved_versions() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["runtime"]["kind"], "node");
     assert_eq!(value["runtime"]["version"], "24.1.0");
+    assert!(value["tools"].is_array());
     assert!(value["cache"].as_str().is_some());
 }
 
@@ -611,9 +729,7 @@ fn empty_inventory_and_prune_are_noops() {
         .output()
         .unwrap();
     assert!(list.status.success());
-    assert!(
-        String::from_utf8_lossy(&list.stdout).contains("No runtimes or package managers installed")
-    );
+    assert!(String::from_utf8_lossy(&list.stdout).contains("No runtimes or tools installed"));
 
     let prune = jolter_command(project.path(), home.path())
         .arg("prune")
@@ -624,7 +740,7 @@ fn empty_inventory_and_prune_are_noops() {
 }
 
 #[test]
-fn uninstall_removes_an_exact_package_manager() {
+fn uninstall_removes_an_exact_tool() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let entrypoint = home
@@ -652,7 +768,7 @@ fn uninstall_removes_an_exact_package_manager() {
 }
 
 #[test]
-fn uninstall_protects_an_active_package_manager_without_force() {
+fn uninstall_protects_an_active_tool_without_force() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let entrypoint = home

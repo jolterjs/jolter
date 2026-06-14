@@ -1,67 +1,121 @@
 # Diagnostics and Inventory
 
-## Installed Toolchains
+Jolter provides two complementary inspection commands:
 
-Run:
+- `jolter list` reports what exists in managed storage;
+- `jolter doctor` evaluates whether the current environment and project are
+  usable.
+
+Both commands are non-destructive.
+
+## Inventory
 
 ```bash
 jolter list
 ```
 
-The command lists both runtime and managed package manager directories.
+The output is separated into runtimes and tools. Columns are dynamically sized
+from the installed labels and paths, so status and path values remain aligned
+without terminal tab stops.
 
-- `*` marks a globally active exact runtime or package manager.
-- `ready` means the expected executable or package manager entry point exists.
-- `incomplete` means a version directory exists but its expected entry point
-  is missing.
+Example:
 
-Incomplete project requirements can be restored with:
+```text
+Runtimes:
+* node@24.5.0  [ready]       C:\Users\me\.jolter\runtimes\node\24.5.0
+  node@22.9.0  [incomplete]  C:\Users\me\.jolter\runtimes\node\22.9.0
 
-```bash
-jolter repair
+Tools:
+* pnpm@10.12.1 [ready]       C:\Users\me\.jolter\tools\pnpm\10.12.1
 ```
 
-## Health Checks
+Interpretation:
 
-Run:
+- `*` means the exact version is globally active;
+- `ready` means the expected executable or entry point exists;
+- `incomplete` means a semantic-version directory exists but its required
+  payload is missing.
+
+Inventory does not hide incomplete directories. This is intentional: partial
+or externally modified installations remain visible for repair and cleanup.
+
+## Inventory JSON
+
+```bash
+jolter list --json
+```
+
+Top-level fields are `runtimes` and `tools`. Each record contains:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `kind` | string | `node`, `bun`, `deno`, `npm`, `pnpm`, or `yarn`. |
+| `version` | string | Exact semantic version. |
+| `path` | string | Managed installation path. |
+| `ready` | boolean | Expected executable or entry point exists. |
+| `active` | boolean | Exact version is the global fallback. |
+
+Use JSON for automation. Human table wording and style are not a parsing
+contract.
+
+## Health Checks
 
 ```bash
 jolter doctor
 ```
 
-Checks currently cover:
+Doctor checks include:
 
-- storage location;
-- storage writability;
-- operating-system, architecture, and Bun CPU support;
-- project requirement resolution;
-- runtime availability;
-- bounded runtime `--version` probing;
-- runtime installation manifests and executable permissions;
-- managed package manager availability;
-- bounded package manager `--version` probing;
-- package manager manifests and Node.js engine compatibility;
-- installed shims;
-- shims directory presence and precedence on `PATH`;
-- unrecognized cache entries and offline readiness;
+- resolved storage location and writability;
+- operating system and architecture support;
+- Bun CPU compatibility where relevant;
+- project configuration and compatibility-file resolution;
+- required runtime and tool availability;
+- bounded `--version` probes for installed selections;
+- installation manifests and executable permissions;
+- managed tool entry points and Node.js engine compatibility;
+- shim presence;
+- shim directory presence and precedence on `PATH`;
+- shadowing by common system and version-manager paths;
+- incomplete or unrecognized cache entries;
+- offline cache readiness;
 - proxy and certificate environment configuration.
 
-Warnings do not make the command fail. A failed check produces a nonzero exit
+Each result is:
+
+- `pass`: the checked condition is ready;
+- `warning`: a risk or non-blocking concern was found;
+- `fail`: the current environment or project cannot be used as expected.
+
+Warnings do not fail the process. Any failed check produces a nonzero exit
 status.
 
-Human-readable findings include an `action:` line when remediation is
-available. JSON findings include the same text in an optional `remediation`
-field.
+## Remediation
 
-## JSON Output
+Human findings can include:
 
-Automation can use:
+```text
+action: run `jolter sync`
+```
+
+Apply remediation in order:
+
+1. storage and permission failures;
+2. invalid project configuration;
+3. missing or incomplete runtime requirements;
+4. missing or incompatible tools;
+5. shims and `PATH` precedence;
+6. cache, proxy, and certificate warnings.
+
+Rerun `jolter doctor` after each environmental change.
+
+## Doctor JSON
 
 ```bash
 jolter doctor --json
 ```
 
-Example shape:
+Example:
 
 ```json
 {
@@ -70,21 +124,61 @@ Example shape:
       "message": "using /home/user/.jolter",
       "name": "storage",
       "status": "pass"
+    },
+    {
+      "message": "Jolter shims are not first on PATH",
+      "name": "PATH precedence",
+      "remediation": "move /home/user/.jolter/shims before other tool managers",
+      "status": "warning"
     }
   ],
   "healthy": true
 }
 ```
 
-Check status values are:
+JSON uses the same checks and exit-status rules as human output.
 
-- `pass`
-- `warning`
-- `fail`
+## Probe Safety
 
-The JSON command uses the same exit status rules and checks as the
-human-readable command.
+Doctor can execute an already-installed runtime or tool with `--version`.
+Probes:
 
-Version probing executes only already-installed local tools, never a newly
-downloaded archive during installation. Probes have a five-second timeout and
-bounded captured output.
+- never execute a downloaded archive during installation;
+- have a five-second timeout;
+- capture at most 16 KiB from standard output and standard error;
+- set `JOLTER_DOCTOR=1` for the child process.
+
+Review this behavior before running diagnostics on a storage directory obtained
+from an untrusted source.
+
+## Common Diagnostic Workflows
+
+New machine:
+
+```bash
+jolter setup
+jolter doctor
+```
+
+Project onboarding:
+
+```bash
+jolter sync
+jolter doctor
+```
+
+Suspected corruption:
+
+```bash
+jolter list
+jolter repair
+jolter doctor
+```
+
+Automation evidence:
+
+```bash
+jolter doctor --json --no-color > jolter-doctor.json
+```
+
+Do not redirect standard error into the JSON file.

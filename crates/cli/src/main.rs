@@ -16,7 +16,7 @@ use clap_complete::{
 };
 use jolter_core::{Jolter, PruneOutcome, SyncOutcome};
 use jolter_doctor::CheckStatus;
-use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind, RuntimeRequest};
+use jolter_runtime::{RuntimeKind, RuntimeRequest, ToolKind, ToolRequest};
 use jolter_shim::{resolve_command, target_for_command};
 use jolter_storage::Storage;
 use semver::Version;
@@ -55,18 +55,33 @@ enum Command {
         #[arg(long, value_enum, default_value_t = SetupShell::Auto)]
         shell: SetupShell,
     },
-    /// Install and activate a runtime or package manager.
+    /// Install and activate a runtime or tool.
     Use {
         /// Tool request, for example node@24 or pnpm@10.
         #[arg(value_parser = parse_use_target)]
         target: UseTarget,
     },
-    /// Write a runtime requirement to jolter.json.
+    /// Write a runtime or tool requirement to jolter.json.
     Pin {
-        /// Runtime request, for example node@24.
-        runtime: RuntimeRequest,
+        /// Runtime or tool request, for example node@24 or pnpm@10.
+        #[arg(value_parser = parse_use_target)]
+        target: UseTarget,
     },
-    /// List locally installed runtimes and package managers.
+    /// Update an active runtime or tool.
+    #[command(visible_alias = "up")]
+    Update {
+        /// Runtime or tool name, optionally with a selector.
+        #[arg(
+            value_parser = parse_update_target,
+            required_unless_present = "all",
+            conflicts_with = "all"
+        )]
+        target: Option<UpdateTarget>,
+        /// Update every active runtime and tool within its current major line.
+        #[arg(long)]
+        all: bool,
+    },
+    /// List locally installed runtimes and tools.
     List {
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -82,12 +97,13 @@ enum Command {
     Repair,
     /// Synchronize the local toolchain with project requirements.
     Sync,
-    /// Remove one exact runtime or package manager version.
+    /// Remove one exact runtime or tool version.
+    #[command(visible_aliases = ["remove", "rm"])]
     Uninstall {
         /// Exact version to remove, for example node@24.1.0 or pnpm@10.2.0.
         #[arg(value_parser = parse_uninstall_target)]
         target: UninstallTarget,
-        /// Permit removal when the runtime or package manager is globally active.
+        /// Permit removal when the runtime or tool is globally active.
         #[arg(long)]
         force: bool,
     },
@@ -112,6 +128,7 @@ enum Command {
         json: bool,
     },
     /// Generate shell completion scripts.
+    #[command(visible_aliases = ["c", "comp"])]
     Completions {
         /// Shell whose completion script should be generated.
         #[arg(value_enum)]
@@ -139,13 +156,19 @@ enum CompletionShell {
 #[derive(Debug, Clone)]
 enum UninstallTarget {
     Runtime(RuntimeKind, Version),
-    PackageManager(PackageManagerKind, Version),
+    Tool(ToolKind, Version),
 }
 
 #[derive(Debug, Clone)]
 enum UseTarget {
     Runtime(RuntimeRequest),
-    PackageManager(PackageManagerRequest),
+    Tool(ToolRequest),
+}
+
+#[derive(Debug, Clone)]
+enum UpdateTarget {
+    Runtime(RuntimeKind, Option<RuntimeRequest>),
+    Tool(ToolKind, Option<ToolRequest>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -226,14 +249,19 @@ fn run(cli: Cli, ui: &Arc<TerminalUi>) -> Result<ExitCode, CliError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Use { target } => run_use(&jolter, target, ui),
-        Command::Pin { runtime } => {
-            jolter.pin(&current_dir, &runtime)?;
+        Command::Pin { target } => {
+            let pinned = target.to_string();
+            match target {
+                UseTarget::Runtime(request) => jolter.pin_runtime(&current_dir, &request)?,
+                UseTarget::Tool(request) => jolter.pin_tool(&current_dir, &request)?,
+            }
             ui.success(format!(
-                "Pinned {runtime} in {}",
+                "Pinned {pinned} in {}",
                 current_dir.join("jolter.json").display()
             ));
             Ok(ExitCode::SUCCESS)
         }
+        Command::Update { target, all } => run_update(&jolter, target, all, ui),
         Command::List { json } => {
             if json {
                 ui.finish_progress();
@@ -285,8 +313,8 @@ fn run_use(jolter: &Jolter, target: UseTarget, ui: &TerminalUi) -> Result<ExitCo
                 action.runtime.path.display()
             ));
         }
-        UseTarget::PackageManager(request) => {
-            let action = jolter.use_package_manager(&request)?;
+        UseTarget::Tool(request) => {
+            let action = jolter.use_tool(&request)?;
             install_shims(jolter)?;
             let verb = if action.downloaded {
                 "Installed and activated"
@@ -294,7 +322,7 @@ fn run_use(jolter: &Jolter, target: UseTarget, ui: &TerminalUi) -> Result<ExitCo
                 "Activated"
             };
             ui.success(format!(
-                "{verb} package manager {}@{} at {}",
+                "{verb} tool {}@{} at {}",
                 action.tool.kind,
                 action.tool.version,
                 action.tool.path.display()
@@ -302,6 +330,128 @@ fn run_use(jolter: &Jolter, target: UseTarget, ui: &TerminalUi) -> Result<ExitCo
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_update(
+    jolter: &Jolter,
+    target: Option<UpdateTarget>,
+    all: bool,
+    ui: &TerminalUi,
+) -> Result<ExitCode, CliError> {
+    let targets = if all {
+        active_update_targets(jolter)?
+    } else {
+        target.into_iter().collect()
+    };
+    if targets.is_empty() {
+        ui.info("No active runtimes or tools to update.");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    for target in targets {
+        match target {
+            UpdateTarget::Runtime(kind, request) => {
+                let previous = jolter.storage().active_version(kind)?;
+                let request = update_runtime_request(kind, request, previous.as_ref())?;
+                let action = jolter.update_runtime(&request)?;
+                print_update_result(
+                    &kind.to_string(),
+                    previous.as_ref(),
+                    &action.runtime.version,
+                    &action.runtime.path,
+                    ui,
+                );
+            }
+            UpdateTarget::Tool(kind, request) => {
+                let previous = jolter.storage().active_tool_version(kind)?;
+                let request = update_tool_request(kind, request, previous.as_ref())?;
+                let action = jolter.update_tool(&request)?;
+                print_update_result(
+                    &kind.to_string(),
+                    previous.as_ref(),
+                    &action.tool.version,
+                    &action.tool.path,
+                    ui,
+                );
+            }
+        }
+    }
+    install_shims(jolter)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn active_update_targets(jolter: &Jolter) -> Result<Vec<UpdateTarget>, CliError> {
+    let mut targets = Vec::new();
+    for kind in RuntimeKind::ALL {
+        if jolter.storage().active_version(kind)?.is_some() {
+            targets.push(UpdateTarget::Runtime(kind, None));
+        }
+    }
+    for kind in ToolKind::ALL {
+        if jolter.storage().active_tool_version(kind)?.is_some() {
+            targets.push(UpdateTarget::Tool(kind, None));
+        }
+    }
+    Ok(targets)
+}
+
+fn update_runtime_request(
+    kind: RuntimeKind,
+    request: Option<RuntimeRequest>,
+    active: Option<&Version>,
+) -> Result<RuntimeRequest, CliError> {
+    request.map_or_else(
+        || {
+            let active = active.ok_or_else(|| CliError::NoActiveUpdateTarget(kind.to_string()))?;
+            RuntimeRequest::new(kind, active.major.to_string())
+                .map_err(|error| CliError::UpdateRequest(error.to_string()))
+        },
+        Ok,
+    )
+}
+
+fn update_tool_request(
+    kind: ToolKind,
+    request: Option<ToolRequest>,
+    active: Option<&Version>,
+) -> Result<ToolRequest, CliError> {
+    request.map_or_else(
+        || {
+            let active = active.ok_or_else(|| CliError::NoActiveUpdateTarget(kind.to_string()))?;
+            ToolRequest::new(kind, active.major.to_string())
+                .map_err(|error| CliError::UpdateRequest(error.to_string()))
+        },
+        Ok,
+    )
+}
+
+fn print_update_result(
+    name: &str,
+    previous: Option<&Version>,
+    current: &Version,
+    path: &Path,
+    ui: &TerminalUi,
+) {
+    match previous {
+        Some(previous) if previous == current => {
+            ui.info(format!(
+                "{name}@{current} is already current at {}",
+                path.display()
+            ));
+        }
+        Some(previous) => {
+            ui.success(format!(
+                "Updated {name} from {previous} to {current} at {}",
+                path.display()
+            ));
+        }
+        None => {
+            ui.success(format!(
+                "Installed and activated {name}@{current} at {}",
+                path.display()
+            ));
+        }
+    }
 }
 
 fn run_uninstall(
@@ -315,8 +465,8 @@ fn run_uninstall(
             let outcome = jolter.uninstall_runtime(kind, &version, force)?;
             (kind.to_string(), version, outcome)
         }
-        UninstallTarget::PackageManager(kind, version) => {
-            let outcome = jolter.uninstall_package_manager(kind, &version, force)?;
+        UninstallTarget::Tool(kind, version) => {
+            let outcome = jolter.uninstall_tool(kind, &version, force)?;
             (kind.to_string(), version, outcome)
         }
     };
@@ -392,7 +542,7 @@ fn print_inventory(jolter: &Jolter, ui: &TerminalUi) -> Result<(), CliError> {
     let runtimes = jolter.list()?;
     let tools = jolter.list_tools()?;
     if runtimes.is_empty() && tools.is_empty() {
-        ui.info("No runtimes or package managers installed.");
+        ui.info("No runtimes or tools installed.");
         return Ok(());
     }
     if !runtimes.is_empty() {
@@ -415,7 +565,7 @@ fn print_inventory(jolter: &Jolter, ui: &TerminalUi) -> Result<(), CliError> {
         ui.table(&rows);
     }
     if !tools.is_empty() {
-        ui.heading("Package managers");
+        ui.heading("Tools");
         let mut rows = Vec::with_capacity(tools.len());
         for tool in tools {
             let active = jolter.storage().active_tool_version(tool.kind)?;
@@ -451,7 +601,7 @@ fn print_inventory_json(jolter: &Jolter) -> Result<(), CliError> {
             }))
         })
         .collect::<Result<Vec<_>, jolter_storage::StorageError>>()?;
-    let package_managers = jolter
+    let tools = jolter
         .list_tools()?
         .into_iter()
         .map(|tool| {
@@ -469,7 +619,7 @@ fn print_inventory_json(jolter: &Jolter) -> Result<(), CliError> {
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "runtimes": runtimes,
-            "packageManagers": package_managers,
+            "tools": tools,
         }))
         .map_err(CliError::Json)?
     );
@@ -650,17 +800,17 @@ fn print_sync_outcome(prefix: &str, outcome: &SyncOutcome, ui: &TerminalUi) {
         outcome.runtime.version,
         outcome.runtime.path.display()
     ));
-    if let Some(package_manager) = &outcome.package_manager {
-        let verb = if package_manager.downloaded {
+    for tool in &outcome.tools {
+        let verb = if tool.downloaded {
             "Installed"
         } else {
             "Selected"
         };
         ui.success(format!(
-            "{verb} package manager {}@{} at {}",
-            package_manager.tool.kind,
-            package_manager.tool.version,
-            package_manager.tool.path.display()
+            "{verb} tool {}@{} at {}",
+            tool.tool.kind,
+            tool.tool.version,
+            tool.tool.path.display()
         ));
     }
 }
@@ -710,14 +860,14 @@ fn configure_ci_environment(
                 outcome.runtime.kind, outcome.runtime.version
             ),
         )?;
-        if let Some(package_manager) = &outcome.package_manager {
-            append_ci_line(
-                "GITHUB_OUTPUT",
-                &format!(
-                    "package_manager={}@{}",
-                    package_manager.tool.kind, package_manager.tool.version
-                ),
-            )?;
+        if !outcome.tools.is_empty() {
+            let tools = outcome
+                .tools
+                .iter()
+                .map(|action| format!("{}@{}", action.tool.kind, action.tool.version))
+                .collect::<Vec<_>>()
+                .join(",");
+            append_ci_line("GITHUB_OUTPUT", &format!("tools={tools}"))?;
         }
         append_ci_line(
             "GITHUB_OUTPUT",
@@ -774,13 +924,17 @@ fn env_flag(name: &str) -> bool {
 }
 
 fn print_ci_json(jolter: &Jolter, outcome: &SyncOutcome, provider: &str) -> Result<(), CliError> {
-    let package_manager = outcome.package_manager.as_ref().map(|action| {
-        serde_json::json!({
-            "kind": action.tool.kind.to_string(),
-            "version": action.tool.version.to_string(),
-            "path": action.tool.path,
+    let tools = outcome
+        .tools
+        .iter()
+        .map(|action| {
+            serde_json::json!({
+                "kind": action.tool.kind.to_string(),
+                "version": action.tool.version.to_string(),
+                "path": action.tool.path,
+            })
         })
-    });
+        .collect::<Vec<_>>();
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -790,7 +944,7 @@ fn print_ci_json(jolter: &Jolter, outcome: &SyncOutcome, provider: &str) -> Resu
                 "version": outcome.runtime.version.to_string(),
                 "path": outcome.runtime.path,
             },
-            "packageManager": package_manager,
+            "tools": tools,
             "shims": jolter.storage().shims_dir(),
             "cache": jolter.storage().cache_dir(),
         }))
@@ -816,7 +970,7 @@ fn print_completions(shell: CompletionShell) {
 fn parse_use_target(value: &str) -> Result<UseTarget, String> {
     let (name, _) = value
         .rsplit_once('@')
-        .ok_or_else(|| "expected <runtime-or-manager>@<version>".to_owned())?;
+        .ok_or_else(|| "expected <runtime-or-tool>@<version>".to_owned())?;
     match name.to_ascii_lowercase().as_str() {
         "node" | "nodejs" | "bun" | "deno" => value
             .parse()
@@ -824,10 +978,41 @@ fn parse_use_target(value: &str) -> Result<UseTarget, String> {
             .map_err(|error: jolter_runtime::RuntimeRequestError| error.to_string()),
         "npm" | "pnpm" | "yarn" | "yarnpkg" => value
             .parse()
-            .map(UseTarget::PackageManager)
-            .map_err(|error: jolter_runtime::PackageManagerRequestError| error.to_string()),
+            .map(UseTarget::Tool)
+            .map_err(|error: jolter_runtime::ToolRequestError| error.to_string()),
         _ => Err(format!(
             "unsupported tool `{name}`; expected node, bun, deno, npm, pnpm, or yarn"
+        )),
+    }
+}
+
+impl std::fmt::Display for UseTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Runtime(request) => request.fmt(formatter),
+            Self::Tool(request) => request.fmt(formatter),
+        }
+    }
+}
+
+fn parse_update_target(value: &str) -> Result<UpdateTarget, String> {
+    if value.contains('@') {
+        return parse_use_target(value).map(|target| match target {
+            UseTarget::Runtime(request) => UpdateTarget::Runtime(request.kind, Some(request)),
+            UseTarget::Tool(request) => UpdateTarget::Tool(request.kind, Some(request)),
+        });
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "node" | "nodejs" | "bun" | "deno" => value
+            .parse()
+            .map(|kind| UpdateTarget::Runtime(kind, None))
+            .map_err(|error: jolter_runtime::RuntimeRequestError| error.to_string()),
+        "npm" | "pnpm" | "yarn" | "yarnpkg" => value
+            .parse()
+            .map(|kind| UpdateTarget::Tool(kind, None))
+            .map_err(|error: jolter_runtime::ToolRequestError| error.to_string()),
+        _ => Err(format!(
+            "unsupported tool `{value}`; expected node, bun, deno, npm, pnpm, or yarn"
         )),
     }
 }
@@ -835,7 +1020,7 @@ fn parse_use_target(value: &str) -> Result<UseTarget, String> {
 fn parse_uninstall_target(value: &str) -> Result<UninstallTarget, String> {
     let (name, selector) = value
         .rsplit_once('@')
-        .ok_or_else(|| "expected <runtime-or-manager>@<exact-version>".to_owned())?;
+        .ok_or_else(|| "expected <runtime-or-tool>@<exact-version>".to_owned())?;
     let version = Version::parse(selector.trim_start_matches('v'))
         .map_err(|_| "uninstall requires an exact semantic version".to_owned())?;
     let normalized = name.to_ascii_lowercase();
@@ -846,8 +1031,8 @@ fn parse_uninstall_target(value: &str) -> Result<UninstallTarget, String> {
             .map_err(|error: jolter_runtime::RuntimeRequestError| error.to_string()),
         "npm" | "pnpm" | "yarn" | "yarnpkg" => name
             .parse()
-            .map(|kind| UninstallTarget::PackageManager(kind, version))
-            .map_err(|error: jolter_runtime::PackageManagerRequestError| error.to_string()),
+            .map(|kind| UninstallTarget::Tool(kind, version))
+            .map_err(|error: jolter_runtime::ToolRequestError| error.to_string()),
         _ => Err(format!(
             "unsupported tool `{name}`; expected node, bun, deno, npm, pnpm, or yarn"
         )),
@@ -949,6 +1134,10 @@ enum CliError {
     Shim(#[from] jolter_shim::ShimError),
     #[error(transparent)]
     Storage(#[from] jolter_storage::StorageError),
+    #[error("no active {0} version; pass an explicit selector such as {0}@latest")]
+    NoActiveUpdateTarget(String),
+    #[error("invalid update request: {0}")]
+    UpdateRequest(String),
     #[error("failed to determine the current directory: {0}")]
     CurrentDirectory(#[source] std::io::Error),
     #[error("failed to determine the Jolter executable: {0}")]

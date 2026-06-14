@@ -44,7 +44,7 @@ jobs:
           {
             "schemaVersion": 1,
             "runtime": { "node": "lts" },
-            "packageManager": { "pnpm": "latest" }
+            "tools": { "pnpm": "latest" }
           }
           '@ | Set-Content -NoNewline (Join-Path $project "jolter.json")
           Push-Location $project

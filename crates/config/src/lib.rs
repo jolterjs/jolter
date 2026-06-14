@@ -17,8 +17,12 @@ pub struct ProjectConfig {
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "RuntimeConfig::is_empty")]
     pub runtime: RuntimeConfig,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub package_manager: BTreeMap<String, String>,
+    #[serde(
+        default,
+        alias = "packageManager",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub tools: BTreeMap<String, String>,
 }
 
 impl Default for ProjectConfig {
@@ -26,7 +30,7 @@ impl Default for ProjectConfig {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
-            package_manager: BTreeMap::new(),
+            tools: BTreeMap::new(),
         }
     }
 }
@@ -88,11 +92,8 @@ impl ProjectConfig {
         if configured_runtimes > 1 {
             return Err(ConfigError::MultipleRuntimes);
         }
-        if self.package_manager.len() > 1 {
-            return Err(ConfigError::MultiplePackageManagers);
-        }
         for (name, selector) in self.runtime.entries().chain(
-            self.package_manager
+            self.tools
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str())),
         ) {
@@ -103,8 +104,8 @@ impl ProjectConfig {
         if let Some((name, selector)) = self.runtime.entries().next() {
             jolter_runtime::RuntimeRequest::new(name.parse()?, selector)?;
         }
-        if let Some((name, selector)) = self.package_manager.iter().next() {
-            jolter_runtime::PackageManagerRequest::new(name.parse()?, selector)?;
+        for (name, selector) in &self.tools {
+            jolter_runtime::ToolRequest::new(name.parse()?, selector)?;
         }
         Ok(())
     }
@@ -186,12 +187,10 @@ pub enum ConfigError {
         "unsupported jolter.json schema version {found}; this Jolter release supports version {supported}"
     )]
     UnsupportedSchemaVersion { found: u32, supported: u32 },
-    #[error("only one package manager may be configured per project")]
-    MultiplePackageManagers,
     #[error("selector for `{0}` cannot be empty")]
     EmptySelector(String),
     #[error(transparent)]
-    PackageManager(#[from] jolter_runtime::PackageManagerRequestError),
+    Tool(#[from] jolter_runtime::ToolRequestError),
     #[error(transparent)]
     Runtime(#[from] jolter_runtime::RuntimeRequestError),
     #[error("invalid configuration path {path}")]
@@ -207,17 +206,15 @@ mod tests {
         let config: ProjectConfig = serde_json::from_str(
             r#"{
                 "runtime": { "node": "24.x" },
-                "packageManager": { "pnpm": "10.x" }
+                "tools": { "pnpm": "10.x", "yarn": "4.x" }
             }"#,
         )
         .unwrap();
 
         config.validate().unwrap();
         assert_eq!(config.runtime.node.as_deref(), Some("24.x"));
-        assert_eq!(
-            config.package_manager.get("pnpm").map(String::as_str),
-            Some("10.x")
-        );
+        assert_eq!(config.tools.get("pnpm").map(String::as_str), Some("10.x"));
+        assert_eq!(config.tools.get("yarn").map(String::as_str), Some("4.x"));
     }
 
     #[test]
@@ -240,7 +237,7 @@ mod tests {
                 bun: Some("1".to_owned()),
                 deno: None,
             },
-            package_manager: BTreeMap::new(),
+            tools: BTreeMap::new(),
         };
 
         assert!(matches!(
@@ -250,29 +247,35 @@ mod tests {
     }
 
     #[test]
-    fn rejects_multiple_or_unknown_package_managers() {
-        let mut package_manager = BTreeMap::new();
-        package_manager.insert("pnpm".to_owned(), "10".to_owned());
-        package_manager.insert("yarn".to_owned(), "4".to_owned());
+    fn accepts_multiple_tools_and_rejects_unknown_tools() {
         let config = ProjectConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
-            package_manager,
+            tools: BTreeMap::from([
+                ("pnpm".to_owned(), "10".to_owned()),
+                ("yarn".to_owned(), "4".to_owned()),
+            ]),
         };
-        assert!(matches!(
-            config.validate(),
-            Err(ConfigError::MultiplePackageManagers)
-        ));
+        config.validate().unwrap();
 
         let config = ProjectConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
-            package_manager: BTreeMap::from([("rush".to_owned(), "5".to_owned())]),
+            tools: BTreeMap::from([("rush".to_owned(), "5".to_owned())]),
         };
-        assert!(matches!(
-            config.validate(),
-            Err(ConfigError::PackageManager(_))
-        ));
+        assert!(matches!(config.validate(), Err(ConfigError::Tool(_))));
+    }
+
+    #[test]
+    fn reads_legacy_package_manager_key_and_writes_tools() {
+        let config: ProjectConfig =
+            serde_json::from_str(r#"{"packageManager":{"pnpm":"10"}}"#).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.tools.get("pnpm").map(String::as_str), Some("10"));
+
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(serialized.contains(r#""tools":{"pnpm":"10"}"#));
+        assert!(!serialized.contains("packageManager"));
     }
 
     #[test]

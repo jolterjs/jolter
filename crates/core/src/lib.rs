@@ -11,7 +11,7 @@ use jolter_installer::{
     ToolInstallOutcome,
 };
 use jolter_resolver::resolve;
-use jolter_runtime::{PackageManagerKind, PackageManagerRequest, RuntimeKind, RuntimeRequest};
+use jolter_runtime::{RuntimeKind, RuntimeRequest, ToolKind, ToolRequest};
 use jolter_storage::{CacheStats, InstalledRuntime, InstalledTool, Storage};
 use semver::Version;
 use thiserror::Error;
@@ -55,7 +55,7 @@ impl Jolter {
         &self.storage
     }
 
-    pub fn pin(&self, project: &Path, request: &RuntimeRequest) -> Result<(), CoreError> {
+    pub fn pin_runtime(&self, project: &Path, request: &RuntimeRequest) -> Result<(), CoreError> {
         let path = project.join(CONFIG_FILE_NAME);
         let target = path.display().to_string();
         self.report(ProgressAction::Configure, &target);
@@ -74,25 +74,97 @@ impl Jolter {
         Ok(())
     }
 
+    pub fn pin_tool(&self, project: &Path, request: &ToolRequest) -> Result<(), CoreError> {
+        let path = project.join(CONFIG_FILE_NAME);
+        let target = path.display().to_string();
+        self.report(ProgressAction::Configure, &target);
+        let mut config = if path.is_file() {
+            ProjectConfig::from_path(&path)?
+        } else {
+            ProjectConfig::default()
+        };
+        let descriptor = request.to_string();
+        let selector = descriptor
+            .split_once('@')
+            .map_or(request.selector.as_str(), |(_, selector)| selector);
+        config
+            .tools
+            .insert(request.kind.to_string(), selector.to_owned());
+        config.write_to(&path)?;
+        Ok(())
+    }
+
     pub fn use_runtime(&self, request: &RuntimeRequest) -> Result<RuntimeAction, CoreError> {
         let target = request.to_string();
         self.report(ProgressAction::Select, &target);
         self.ensure_runtime(request, false)
     }
 
-    pub fn use_package_manager(
-        &self,
-        request: &PackageManagerRequest,
-    ) -> Result<PackageManagerAction, CoreError> {
+    pub fn use_tool(&self, request: &ToolRequest) -> Result<ToolAction, CoreError> {
         let requested = request.to_string();
         self.report(ProgressAction::Select, &requested);
         let node_version = self.active_node_version(request)?;
-        let outcome = self.ensure_package_manager(request, &node_version, false)?;
+        let outcome = self.ensure_tool(request, &node_version, false)?;
         let target = format!("{}@{}", outcome.tool.kind, outcome.tool.version);
         self.report(ProgressAction::Activate, &target);
         self.storage
             .activate_tool(outcome.tool.kind, &outcome.tool.version)?;
-        Ok(PackageManagerAction {
+        Ok(ToolAction {
+            request: request.clone(),
+            tool: outcome.tool,
+            downloaded: outcome.downloaded,
+        })
+    }
+
+    pub fn update_runtime(&self, request: &RuntimeRequest) -> Result<RuntimeAction, CoreError> {
+        let requested = request.to_string();
+        self.report(ProgressAction::Resolve, &requested);
+        if Version::parse(request.selector.trim_start_matches('v')).is_ok()
+            && let Some(runtime) = self.storage.find_matching(request)?
+        {
+            let target = format!("{}@{}", runtime.kind, runtime.version);
+            self.report(ProgressAction::Reuse, &target);
+            self.report(ProgressAction::Activate, &target);
+            self.storage.activate(runtime.kind, &runtime.version)?;
+            return Ok(RuntimeAction {
+                runtime,
+                downloaded: false,
+            });
+        }
+        let outcome = self.installer.install(request)?;
+        let target = format!("{}@{}", outcome.runtime.kind, outcome.runtime.version);
+        self.report(ProgressAction::Activate, &target);
+        self.storage
+            .activate(outcome.runtime.kind, &outcome.runtime.version)?;
+        Ok(RuntimeAction::from(outcome))
+    }
+
+    pub fn update_tool(&self, request: &ToolRequest) -> Result<ToolAction, CoreError> {
+        let requested = request.to_string();
+        self.report(ProgressAction::Resolve, &requested);
+        let node_version = self.active_node_version(request)?;
+        if request.hash.is_none()
+            && Version::parse(request.selector.trim_start_matches('v')).is_ok()
+            && let Some(tool) = self.storage.find_matching_tool(request)?
+        {
+            self.installer
+                .validate_installed_tool(&tool, &node_version)?;
+            let target = format!("{}@{}", tool.kind, tool.version);
+            self.report(ProgressAction::Reuse, &target);
+            self.report(ProgressAction::Activate, &target);
+            self.storage.activate_tool(tool.kind, &tool.version)?;
+            return Ok(ToolAction {
+                request: request.clone(),
+                tool,
+                downloaded: false,
+            });
+        }
+        let outcome = self.installer.install_tool(request, &node_version)?;
+        let target = format!("{}@{}", outcome.tool.kind, outcome.tool.version);
+        self.report(ProgressAction::Activate, &target);
+        self.storage
+            .activate_tool(outcome.tool.kind, &outcome.tool.version)?;
+        Ok(ToolAction {
             request: request.clone(),
             tool: outcome.tool,
             downloaded: outcome.downloaded,
@@ -143,9 +215,9 @@ impl Jolter {
         Ok(outcome)
     }
 
-    pub fn uninstall_package_manager(
+    pub fn uninstall_tool(
         &self,
-        kind: PackageManagerKind,
+        kind: ToolKind,
         version: &Version,
         force: bool,
     ) -> Result<RemovalOutcome, CoreError> {
@@ -153,12 +225,12 @@ impl Jolter {
         self.report(ProgressAction::Remove, &target);
         let active = self.storage.active_tool_version(kind)?;
         if active.as_ref() == Some(version) && !force {
-            return Err(CoreError::ActivePackageManagerRemoval {
+            return Err(CoreError::ActiveToolRemoval {
                 kind,
                 version: version.clone(),
             });
         }
-        let outcome = self.installer.uninstall_package_manager(kind, version)?;
+        let outcome = self.installer.uninstall_tool(kind, version)?;
         if active.as_ref() == Some(version) {
             self.storage.deactivate_tool(kind, Some(version))?;
         }
@@ -196,7 +268,7 @@ impl Jolter {
             }
         }
 
-        for kind in PackageManagerKind::ALL {
+        for kind in ToolKind::ALL {
             if let Some(version) = self.storage.active_tool_version(kind)? {
                 protected_tools.insert((kind, version));
             }
@@ -209,8 +281,8 @@ impl Jolter {
                     .map(|tool| (tool.kind, tool.version.clone())),
             );
         }
-        if let Some(package_manager) = resolution.package_manager {
-            if let Some(installed) = self.storage.find_matching_tool(&package_manager.request)? {
+        for resolved in resolution.tools {
+            if let Some(installed) = self.storage.find_matching_tool(&resolved.request)? {
                 protected_tools.insert((installed.kind, installed.version));
             }
         }
@@ -230,7 +302,7 @@ impl Jolter {
             .into_iter()
             .filter(|tool| !protected_tools.contains(&(tool.kind, tool.version.clone())))
             .map(|tool| PruneItem {
-                kind: PruneItemKind::PackageManager(tool.kind),
+                kind: PruneItemKind::Tool(tool.kind),
                 version: tool.version,
                 path: tool.path,
                 reclaimed_bytes: 0,
@@ -248,9 +320,7 @@ impl Jolter {
                 PruneItemKind::Runtime(kind) => {
                     self.installer.uninstall_runtime(kind, &item.version)?
                 }
-                PruneItemKind::PackageManager(kind) => self
-                    .installer
-                    .uninstall_package_manager(kind, &item.version)?,
+                PruneItemKind::Tool(kind) => self.installer.uninstall_tool(kind, &item.version)?,
             };
             item.reclaimed_bytes = outcome.reclaimed_bytes;
         }
@@ -280,33 +350,30 @@ impl Jolter {
             .runtime
             .ok_or_else(|| CoreError::NoRuntimeRequirement(project.to_path_buf()))?;
         let action = self.ensure_runtime(&runtime.request, repair)?;
-        let package_manager = resolution
-            .package_manager
+        let tools = resolution
+            .tools
+            .into_iter()
             .map(|resolved| {
                 if action.runtime.kind != RuntimeKind::Node {
-                    return Err(CoreError::PackageManagerRequiresNode(resolved.request));
+                    return Err(CoreError::ToolRequiresNode(resolved.request));
                 }
-                let tool = self.ensure_package_manager(
-                    &resolved.request,
-                    &action.runtime.version,
-                    repair,
-                )?;
+                let tool = self.ensure_tool(&resolved.request, &action.runtime.version, repair)?;
                 let target = format!("{}@{}", tool.tool.kind, tool.tool.version);
                 self.report(ProgressAction::Activate, &target);
                 self.storage
                     .activate_tool(tool.tool.kind, &tool.tool.version)?;
-                Ok(PackageManagerAction {
+                Ok(ToolAction {
                     request: resolved.request,
                     tool: tool.tool,
                     downloaded: tool.downloaded,
                 })
             })
-            .transpose()?;
+            .collect::<Result<Vec<_>, CoreError>>()?;
 
         Ok(SyncOutcome {
             runtime: action.runtime,
             downloaded: action.downloaded,
-            package_manager,
+            tools,
         })
     }
 
@@ -340,9 +407,9 @@ impl Jolter {
         Ok(RuntimeAction::from(outcome))
     }
 
-    fn ensure_package_manager(
+    fn ensure_tool(
         &self,
-        request: &PackageManagerRequest,
+        request: &ToolRequest,
         node_version: &semver::Version,
         repair: bool,
     ) -> Result<ToolInstallOutcome, CoreError> {
@@ -351,7 +418,7 @@ impl Jolter {
                 let target = format!("{}@{}", tool.kind, tool.version);
                 self.report(ProgressAction::Reuse, &target);
                 self.installer
-                    .validate_installed_package_manager(&tool, node_version)?;
+                    .validate_installed_tool(&tool, node_version)?;
                 return Ok(ToolInstallOutcome {
                     tool,
                     downloaded: false,
@@ -359,21 +426,17 @@ impl Jolter {
             }
         }
         if repair {
-            Ok(self
-                .installer
-                .repair_package_manager(request, node_version)?)
+            Ok(self.installer.repair_tool(request, node_version)?)
         } else {
-            Ok(self
-                .installer
-                .install_package_manager(request, node_version)?)
+            Ok(self.installer.install_tool(request, node_version)?)
         }
     }
 
-    fn active_node_version(&self, request: &PackageManagerRequest) -> Result<Version, CoreError> {
+    fn active_node_version(&self, request: &ToolRequest) -> Result<Version, CoreError> {
         let version = self
             .storage
             .active_version(RuntimeKind::Node)?
-            .ok_or_else(|| CoreError::PackageManagerRequiresActiveNode(request.clone()))?;
+            .ok_or_else(|| CoreError::ToolRequiresActiveNode(request.clone()))?;
         let path = self
             .storage
             .runtime_version_dir(RuntimeKind::Node, &version);
@@ -412,12 +475,12 @@ impl From<InstallOutcome> for RuntimeAction {
 pub struct SyncOutcome {
     pub runtime: InstalledRuntime,
     pub downloaded: bool,
-    pub package_manager: Option<PackageManagerAction>,
+    pub tools: Vec<ToolAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackageManagerAction {
-    pub request: PackageManagerRequest,
+pub struct ToolAction {
+    pub request: ToolRequest,
     pub tool: InstalledTool,
     pub downloaded: bool,
 }
@@ -425,14 +488,14 @@ pub struct PackageManagerAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PruneItemKind {
     Runtime(RuntimeKind),
-    PackageManager(PackageManagerKind),
+    Tool(ToolKind),
 }
 
 impl std::fmt::Display for PruneItemKind {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Runtime(kind) => kind.fmt(formatter),
-            Self::PackageManager(kind) => kind.fmt(formatter),
+            Self::Tool(kind) => kind.fmt(formatter),
         }
     }
 }
@@ -462,12 +525,10 @@ impl PruneOutcome {
 pub enum CoreError {
     #[error("no runtime requirement was found from {0}")]
     NoRuntimeRequirement(PathBuf),
-    #[error("package manager {0} requires a Node.js runtime")]
-    PackageManagerRequiresNode(PackageManagerRequest),
-    #[error(
-        "package manager {0} requires an active Node.js runtime; run `jolter use node@<version>` first"
-    )]
-    PackageManagerRequiresActiveNode(PackageManagerRequest),
+    #[error("tool {0} requires a Node.js runtime")]
+    ToolRequiresNode(ToolRequest),
+    #[error("tool {0} requires an active Node.js runtime; run `jolter use node@<version>` first")]
+    ToolRequiresActiveNode(ToolRequest),
     #[error("active node@{version} runtime is missing from {path}")]
     ActiveNodeRuntimeMissing { version: Version, path: PathBuf },
     #[error(
@@ -477,10 +538,7 @@ pub enum CoreError {
     #[error(
         "refusing to uninstall active {kind}@{version}; activate another version or pass --force"
     )]
-    ActivePackageManagerRemoval {
-        kind: PackageManagerKind,
-        version: Version,
-    },
+    ActiveToolRemoval { kind: ToolKind, version: Version },
     #[error(transparent)]
     Config(#[from] jolter_config::ConfigError),
     #[error(transparent)]
@@ -501,14 +559,14 @@ mod tests {
     use std::{collections::BTreeMap, fs};
 
     #[test]
-    fn pin_preserves_package_manager_configuration() {
+    fn pin_runtime_preserves_tool_configuration() {
         let temp = tempfile::tempdir().unwrap();
-        let mut package_manager = BTreeMap::new();
-        package_manager.insert("pnpm".to_owned(), "10.x".to_owned());
+        let mut tools = BTreeMap::new();
+        tools.insert("pnpm".to_owned(), "10.x".to_owned());
         ProjectConfig {
             schema_version: jolter_config::CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
-            package_manager,
+            tools,
         }
         .write_to(&temp.path().join(CONFIG_FILE_NAME))
         .unwrap();
@@ -516,15 +574,39 @@ mod tests {
         let jolter = Jolter::with_storage(Storage::new(storage_temp.path())).unwrap();
 
         jolter
-            .pin(temp.path(), &"node@24".parse().unwrap())
+            .pin_runtime(temp.path(), &"node@24".parse().unwrap())
             .unwrap();
 
         let config = ProjectConfig::from_path(&temp.path().join(CONFIG_FILE_NAME)).unwrap();
         assert_eq!(config.runtime.node.as_deref(), Some("24"));
-        assert_eq!(
-            config.package_manager.get("pnpm").map(String::as_str),
-            Some("10.x")
-        );
+        assert_eq!(config.tools.get("pnpm").map(String::as_str), Some("10.x"));
+    }
+
+    #[test]
+    fn pin_tool_preserves_runtime_and_other_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        ProjectConfig {
+            schema_version: jolter_config::CURRENT_SCHEMA_VERSION,
+            runtime: RuntimeConfig {
+                node: Some("24".to_owned()),
+                bun: None,
+                deno: None,
+            },
+            tools: BTreeMap::from([("pnpm".to_owned(), "10".to_owned())]),
+        }
+        .write_to(&temp.path().join(CONFIG_FILE_NAME))
+        .unwrap();
+        let storage_temp = tempfile::tempdir().unwrap();
+        let jolter = Jolter::with_storage(Storage::new(storage_temp.path())).unwrap();
+
+        jolter
+            .pin_tool(temp.path(), &"yarn@4".parse().unwrap())
+            .unwrap();
+
+        let config = ProjectConfig::from_path(&temp.path().join(CONFIG_FILE_NAME)).unwrap();
+        assert_eq!(config.runtime.node.as_deref(), Some("24"));
+        assert_eq!(config.tools.get("pnpm").map(String::as_str), Some("10"));
+        assert_eq!(config.tools.get("yarn").map(String::as_str), Some("4"));
     }
 
     #[test]
@@ -550,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_uses_an_existing_matching_package_manager_without_network() {
+    fn sync_uses_an_existing_matching_tool_without_network() {
         let project = tempfile::tempdir().unwrap();
         fs::write(
             project.path().join(CONFIG_FILE_NAME),
@@ -565,11 +647,7 @@ mod tests {
         fs::write(&executable, b"node").unwrap();
         let tool_version = semver::Version::new(10, 2, 0);
         let entrypoint = storage
-            .tool_entrypoint(
-                jolter_runtime::PackageManagerKind::Pnpm,
-                &tool_version,
-                "pnpm",
-            )
+            .tool_entrypoint(jolter_runtime::ToolKind::Pnpm, &tool_version, "pnpm")
             .unwrap();
         fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
         fs::write(entrypoint, b"pnpm").unwrap();
@@ -577,17 +655,53 @@ mod tests {
 
         let outcome = jolter.sync(project.path()).unwrap();
 
-        assert_eq!(outcome.package_manager.unwrap().tool.version, tool_version);
+        assert_eq!(outcome.tools[0].tool.version, tool_version);
         assert_eq!(
-            storage
-                .active_tool_version(PackageManagerKind::Pnpm)
-                .unwrap(),
+            storage.active_tool_version(ToolKind::Pnpm).unwrap(),
             Some(tool_version)
         );
     }
 
     #[test]
-    fn use_reuses_and_activates_a_package_manager_with_active_node() {
+    fn sync_activates_multiple_configured_tools() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(
+            project.path().join(CONFIG_FILE_NAME),
+            r#"{"runtime":{"node":"24"},"tools":{"pnpm":"10","yarn":"4"}}"#,
+        )
+        .unwrap();
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        storage.ensure_layout().unwrap();
+        let node_version = Version::new(24, 1, 0);
+        let node = storage.runtime_executable(RuntimeKind::Node, &node_version);
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(node, b"node").unwrap();
+        for (kind, version, command) in [
+            (ToolKind::Pnpm, Version::new(10, 2, 0), "pnpm"),
+            (ToolKind::Yarn, Version::new(4, 1, 0), "yarn"),
+        ] {
+            let entrypoint = storage.tool_entrypoint(kind, &version, command).unwrap();
+            fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+            fs::write(entrypoint, b"tool").unwrap();
+        }
+        let jolter = Jolter::with_storage(storage.clone()).unwrap();
+
+        let outcome = jolter.sync(project.path()).unwrap();
+
+        assert_eq!(outcome.tools.len(), 2);
+        assert_eq!(
+            storage.active_tool_version(ToolKind::Pnpm).unwrap(),
+            Some(Version::new(10, 2, 0))
+        );
+        assert_eq!(
+            storage.active_tool_version(ToolKind::Yarn).unwrap(),
+            Some(Version::new(4, 1, 0))
+        );
+    }
+
+    #[test]
+    fn use_reuses_and_activates_a_tool_with_active_node() {
         let storage_temp = tempfile::tempdir().unwrap();
         let storage = Storage::new(storage_temp.path());
         let node_version = semver::Version::new(24, 1, 0);
@@ -597,43 +711,34 @@ mod tests {
         storage.activate(RuntimeKind::Node, &node_version).unwrap();
         let tool_version = semver::Version::new(10, 2, 0);
         let entrypoint = storage
-            .tool_entrypoint(PackageManagerKind::Pnpm, &tool_version, "pnpm")
+            .tool_entrypoint(ToolKind::Pnpm, &tool_version, "pnpm")
             .unwrap();
         fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
         fs::write(entrypoint, b"pnpm").unwrap();
         let jolter = Jolter::with_storage(storage.clone()).unwrap();
 
-        let action = jolter
-            .use_package_manager(&"pnpm@10".parse().unwrap())
-            .unwrap();
+        let action = jolter.use_tool(&"pnpm@10".parse().unwrap()).unwrap();
 
         assert_eq!(action.tool.version, tool_version);
         assert!(!action.downloaded);
         assert_eq!(
-            storage
-                .active_tool_version(PackageManagerKind::Pnpm)
-                .unwrap(),
+            storage.active_tool_version(ToolKind::Pnpm).unwrap(),
             Some(tool_version)
         );
     }
 
     #[test]
-    fn use_package_manager_requires_an_active_node_runtime() {
+    fn use_tool_requires_an_active_node_runtime() {
         let storage_temp = tempfile::tempdir().unwrap();
         let jolter = Jolter::with_storage(Storage::new(storage_temp.path())).unwrap();
 
-        let error = jolter
-            .use_package_manager(&"pnpm@10".parse().unwrap())
-            .unwrap_err();
+        let error = jolter.use_tool(&"pnpm@10".parse().unwrap()).unwrap_err();
 
-        assert!(matches!(
-            error,
-            CoreError::PackageManagerRequiresActiveNode(_)
-        ));
+        assert!(matches!(error, CoreError::ToolRequiresActiveNode(_)));
     }
 
     #[test]
-    fn sync_rejects_an_existing_package_manager_incompatible_with_node() {
+    fn sync_rejects_an_existing_tool_incompatible_with_node() {
         let project = tempfile::tempdir().unwrap();
         fs::write(
             project.path().join(CONFIG_FILE_NAME),
@@ -648,17 +753,13 @@ mod tests {
         fs::write(&executable, b"node").unwrap();
         let tool_version = semver::Version::new(11, 6, 0);
         let entrypoint = storage
-            .tool_entrypoint(
-                jolter_runtime::PackageManagerKind::Pnpm,
-                &tool_version,
-                "pnpm",
-            )
+            .tool_entrypoint(jolter_runtime::ToolKind::Pnpm, &tool_version, "pnpm")
             .unwrap();
         fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
         fs::write(entrypoint, b"pnpm").unwrap();
         fs::write(
             storage
-                .tool_version_dir(jolter_runtime::PackageManagerKind::Pnpm, &tool_version)
+                .tool_version_dir(jolter_runtime::ToolKind::Pnpm, &tool_version)
                 .join("package.json"),
             r#"{"engines":{"node":">=22.13"}}"#,
         )
@@ -749,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn active_package_managers_are_protected_from_prune_and_uninstall() {
+    fn active_tools_are_protected_from_prune_and_uninstall() {
         let project = tempfile::tempdir().unwrap();
         fs::write(
             project.path().join(CONFIG_FILE_NAME),
@@ -768,32 +869,25 @@ mod tests {
             semver::Version::new(10, 2, 0),
         ] {
             let entrypoint = storage
-                .tool_entrypoint(PackageManagerKind::Pnpm, &version, "pnpm")
+                .tool_entrypoint(ToolKind::Pnpm, &version, "pnpm")
                 .unwrap();
             fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
             fs::write(entrypoint, b"pnpm").unwrap();
         }
         let active = semver::Version::new(9, 1, 0);
-        storage
-            .activate_tool(PackageManagerKind::Pnpm, &active)
-            .unwrap();
+        storage.activate_tool(ToolKind::Pnpm, &active).unwrap();
         let jolter = Jolter::with_storage(storage.clone()).unwrap();
 
         let preview = jolter.prune(project.path(), 0, true).unwrap();
         assert_eq!(preview.removed.len(), 1);
         assert_eq!(preview.removed[0].version, semver::Version::new(10, 2, 0));
         assert!(matches!(
-            jolter.uninstall_package_manager(PackageManagerKind::Pnpm, &active, false),
-            Err(CoreError::ActivePackageManagerRemoval { .. })
+            jolter.uninstall_tool(ToolKind::Pnpm, &active, false),
+            Err(CoreError::ActiveToolRemoval { .. })
         ));
         jolter
-            .uninstall_package_manager(PackageManagerKind::Pnpm, &active, true)
+            .uninstall_tool(ToolKind::Pnpm, &active, true)
             .unwrap();
-        assert_eq!(
-            storage
-                .active_tool_version(PackageManagerKind::Pnpm)
-                .unwrap(),
-            None
-        );
+        assert_eq!(storage.active_tool_version(ToolKind::Pnpm).unwrap(), None);
     }
 }
