@@ -47,13 +47,13 @@ jolter list --json
 
 Top-level fields are `runtimes` and `tools`. Each record contains:
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `kind` | string | `node`, `bun`, `deno`, `npm`, `pnpm`, or `yarn`. |
-| `version` | string | Exact semantic version. |
-| `path` | string | Managed installation path. |
-| `ready` | boolean | Expected executable or entry point exists. |
-| `active` | boolean | Exact version is the global fallback. |
+| Field     | Type    | Meaning                                          |
+| --------- | ------- | ------------------------------------------------ |
+| `kind`    | string  | `node`, `bun`, `deno`, `npm`, `pnpm`, or `yarn`. |
+| `version` | string  | Exact semantic version.                          |
+| `path`    | string  | Managed installation path.                       |
+| `ready`   | boolean | Expected executable or entry point exists.       |
+| `active`  | boolean | Exact version is the global fallback.            |
 
 Use JSON for automation. Human table wording and style are not a parsing
 contract.

@@ -5,22 +5,22 @@ through Node.js.
 
 ## Supported Runtimes
 
-| Runtime | Provider | Selectors | Notes |
-| --- | --- | --- | --- |
-| Node.js | Official Node.js distribution | Numeric, wildcard, `latest`, `lts` | Provides the execution environment for managed tools. |
-| Bun | Official Bun GitHub releases | Numeric, wildcard, `latest` | x64 builds require the CPU capabilities supported by the provider. |
-| Deno | Official Deno GitHub releases | Numeric, wildcard, `latest` | Installed as an independent runtime. |
+| Runtime | Provider                      | Selectors                          | Notes                                                              |
+| ------- | ----------------------------- | ---------------------------------- | ------------------------------------------------------------------ |
+| Node.js | Official Node.js distribution | Numeric, wildcard, `latest`, `lts` | Provides the execution environment for managed tools.              |
+| Bun     | Official Bun GitHub releases  | Numeric, wildcard, `latest`        | x64 builds require the CPU capabilities supported by the provider. |
+| Deno    | Official Deno GitHub releases | Numeric, wildcard, `latest`        | Installed as an independent runtime.                               |
 
 Jolter selects artifacts for the current operating system and architecture.
 Unsupported platform combinations fail before publication.
 
 ## Supported Managed Tools
 
-| Tool | Registry package | Commands |
-| --- | --- | --- |
-| npm | `npm` | `npm`, `npx` |
-| pnpm | `pnpm` | `pnpm` |
-| Yarn | `@yarnpkg/cli-dist` | `yarn` |
+| Tool | Registry package    | Commands     |
+| ---- | ------------------- | ------------ |
+| npm  | `npm`               | `npm`, `npx` |
+| pnpm | `pnpm`              | `pnpm`       |
+| Yarn | `@yarnpkg/cli-dist` | `yarn`       |
 
 Tool tarballs come from the official npm registry and execute through the
 selected Node.js runtime. Jolter validates the package's `engines.node` range

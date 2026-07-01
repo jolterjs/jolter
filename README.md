@@ -13,7 +13,7 @@ and use the right toolchain without manually switching versions.
 Run in PowerShell:
 
 ```powershell
-irm https://jolter.dev/win/install | iex
+irm https://get.jolter.dev/install.ps1 | iex
 ```
 
 ### Linux and macOS
@@ -21,7 +21,7 @@ irm https://jolter.dev/win/install | iex
 Run in a terminal:
 
 ```bash
-curl -fsSL https://jolter.dev/unix/install | sh
+curl -fsSL https://get.jolter.dev/install.sh | sh
 ```
 
 Then finish shell setup:
@@ -100,12 +100,12 @@ installations atomically.
 
 ## Supported Toolchains
 
-| Category | Supported |
-| --- | --- |
-| Runtimes | Node.js, Bun, Deno |
-| Tools | npm, pnpm, Yarn |
+| Category  | Supported                                           |
+| --------- | --------------------------------------------------- |
+| Runtimes  | Node.js, Bun, Deno                                  |
+| Tools     | npm, pnpm, Yarn                                     |
 | Platforms | Windows x64, Linux x64, macOS x64, macOS ARM64, WSL |
-| Shells | PowerShell, Command Prompt, Bash, Zsh, Fish |
+| Shells    | PowerShell, Command Prompt, Bash, Zsh, Fish         |
 
 Tools run through the selected Node.js version, so Jolter also checks their
 declared Node.js compatibility before activation.

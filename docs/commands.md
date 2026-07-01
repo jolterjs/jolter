@@ -8,14 +8,14 @@ version.
 
 Global options can be used with every command:
 
-| Option | Purpose |
-| --- | --- |
-| `--no-progress` | Disable the in-place progress line and use stable action lines. |
-| `--no-color` | Disable ANSI styling. |
-| `-q`, `--quiet` | Suppress operational progress while keeping command results. |
-| `-v`, `--verbose` | Include transfer timing and additional operational detail. |
-| `-h`, `--help` | Print help. |
-| `-V`, `--version` | Print the Jolter version. |
+| Option            | Purpose                                                         |
+| ----------------- | --------------------------------------------------------------- |
+| `--no-progress`   | Disable the in-place progress line and use stable action lines. |
+| `--no-color`      | Disable ANSI styling.                                           |
+| `-q`, `--quiet`   | Suppress operational progress while keeping command results.    |
+| `-v`, `--verbose` | Include transfer timing and additional operational detail.      |
+| `-h`, `--help`    | Print help.                                                     |
+| `-V`, `--version` | Print the Jolter version.                                       |
 
 `--quiet` and `--verbose` conflict. CI detection, redirected output, and
 `JOLTER_NO_PROGRESS` also disable the in-place renderer.

@@ -8,12 +8,12 @@ releases and update the public installer endpoints.
 
 The release workflow builds:
 
-| Platform | Rust target | Archive |
-| --- | --- | --- |
-| Linux x64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
-| Windows x64 | `x86_64-pc-windows-msvc` | `.zip` |
-| macOS x64 | `x86_64-apple-darwin` | `.tar.gz` |
-| macOS ARM64 | `aarch64-apple-darwin` | `.tar.gz` |
+| Platform    | Rust target                | Archive   |
+| ----------- | -------------------------- | --------- |
+| Linux x64   | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Windows x64 | `x86_64-pc-windows-msvc`   | `.zip`    |
+| macOS x64   | `x86_64-apple-darwin`      | `.tar.gz` |
+| macOS ARM64 | `aarch64-apple-darwin`     | `.tar.gz` |
 
 Every archive is accompanied by a `.sha256` checksum file.
 

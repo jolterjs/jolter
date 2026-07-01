@@ -36,15 +36,15 @@ jolter setup-ci --quiet
 jolter use node@24 --verbose
 ```
 
-| Control | Effect |
-| --- | --- |
-| `--no-progress` | Stable action lines instead of an updating line. |
-| `--no-color` | No ANSI color sequences. |
-| `--quiet` | Final results and failures only. |
-| `--verbose` | Transfer timing, rate, and additional detail. |
-| `JOLTER_NO_PROGRESS=1` | Environment equivalent of plain progress. |
-| `JOLTER_NO_COLOR=1` | Jolter-specific color disable. |
-| `NO_COLOR` | Standard ecosystem color disable. |
+| Control                | Effect                                           |
+| ---------------------- | ------------------------------------------------ |
+| `--no-progress`        | Stable action lines instead of an updating line. |
+| `--no-color`           | No ANSI color sequences.                         |
+| `--quiet`              | Final results and failures only.                 |
+| `--verbose`            | Transfer timing, rate, and additional detail.    |
+| `JOLTER_NO_PROGRESS=1` | Environment equivalent of plain progress.        |
+| `JOLTER_NO_COLOR=1`    | Jolter-specific color disable.                   |
+| `NO_COLOR`             | Standard ecosystem color disable.                |
 
 `JOLTER_NO_PROGRESS` and CI flags recognize `1`, `true`, and `yes`,
 case-insensitively. `JOLTER_NO_COLOR` and `NO_COLOR` disable color whenever
@@ -168,11 +168,11 @@ Provider values currently include `github-actions`, `gitlab-ci`, `circleci`,
 
 When the runner supplies the standard files, `setup-ci` writes:
 
-| Output | Example |
-| --- | --- |
-| `runtime` | `node@24.5.0` |
-| `tools` | `pnpm@10.12.1,yarn@4.9.2` |
-| `cache` | `/home/runner/.jolter/cache` |
+| Output    | Example                      |
+| --------- | ---------------------------- |
+| `runtime` | `node@24.5.0`                |
+| `tools`   | `pnpm@10.12.1,yarn@4.9.2`    |
+| `cache`   | `/home/runner/.jolter/cache` |
 
 The shims directory is appended to `GITHUB_PATH`.
 

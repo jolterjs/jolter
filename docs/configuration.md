@@ -31,13 +31,13 @@ All fields are optional, but commands such as `sync`, `repair`, and
 
 ## Top-Level Fields
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `$schema` | string | Optional JSON Schema URL. Jolter writes `https://schemas.jolter.dev/project/v2/schema.json` for current files. |
-| `schemaVersion` | integer | Configuration schema. The current value is `2`; version `1` remains accepted. |
-| `runtime` | object | Zero or one of `node`, `bun`, or `deno`. |
-| `tools` | object | Zero or more built-in or plugin-provided tools. |
-| `plugins` | object | Plugin version requirements for schema version 2 projects. |
+| Field           | Type    | Meaning                                                                                                        |
+| --------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `$schema`       | string  | Optional JSON Schema URL. Jolter writes `https://schemas.jolter.dev/project/v2/schema.json` for current files. |
+| `schemaVersion` | integer | Configuration schema. The current value is `2`; version `1` remains accepted.                                  |
+| `runtime`       | object  | Zero or one of `node`, `bun`, or `deno`.                                                                       |
+| `tools`         | object  | Zero or more built-in or plugin-provided tools.                                                                |
+| `plugins`       | object  | Plugin version requirements for schema version 2 projects.                                                     |
 
 Unknown fields fail validation. Unknown schema versions fail closed rather than
 being guessed.
@@ -103,16 +103,16 @@ supports ESLint.
 
 Supported numeric forms are:
 
-| Selector | Meaning |
-| --- | --- |
-| `24` | Highest stable `24.*.*` release. |
-| `24.x` | Same major-line intent as `24`. |
-| `24.5` | Highest stable `24.5.*` release. |
-| `24.5.x` | Same minor-line intent as `24.5`. |
-| `24.5.0` | Exact semantic version. |
-| `x` or `*` | Any stable version. |
-| `latest` | Highest stable release from the provider. |
-| `lts` | Highest current LTS release; Node.js only. |
+| Selector   | Meaning                                    |
+| ---------- | ------------------------------------------ |
+| `24`       | Highest stable `24.*.*` release.           |
+| `24.x`     | Same major-line intent as `24`.            |
+| `24.5`     | Highest stable `24.5.*` release.           |
+| `24.5.x`   | Same minor-line intent as `24.5`.          |
+| `24.5.0`   | Exact semantic version.                    |
+| `x` or `*` | Any stable version.                        |
+| `latest`   | Highest stable release from the provider.  |
+| `lts`      | Highest current LTS release; Node.js only. |
 
 Leading `v` is accepted in direct requests and normalized. Whitespace,
 embedded `@`, ranges such as `>=20`, unions, prerelease syntax, and more than

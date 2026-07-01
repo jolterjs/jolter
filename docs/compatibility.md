@@ -97,10 +97,10 @@ rebuildable. Lock filenames and temporary staging names are internal.
 
 Documented JSON top-level fields are:
 
-| Command | Fields |
-| --- | --- |
-| `list --json` | `runtimes`, `tools` |
-| `doctor --json` | `healthy`, `checks` |
+| Command           | Fields                                           |
+| ----------------- | ------------------------------------------------ |
+| `list --json`     | `runtimes`, `tools`                              |
+| `doctor --json`   | `healthy`, `checks`                              |
 | `setup-ci --json` | `provider`, `runtime`, `tools`, `shims`, `cache` |
 
 New optional fields may be added in a compatible release. Consumers should

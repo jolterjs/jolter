@@ -154,21 +154,21 @@ project to combine a Node version file with a tool declaration in
 
 ### Commands
 
-| Command | Status | Current behavior |
-| --- | --- | --- |
-| `jolter use <tool>` | Complete | Installs or reuses a runtime or tool, activates it, and installs shims. Tools require active Node.js. |
-| `jolter pin <runtime-or-tool>` | Complete | Writes a runtime or tool requirement to `jolter.json` while preserving other entries. |
-| `jolter update [target]` | Complete | Updates an active runtime or tool within its major line, accepts explicit selectors, and supports `--all`. |
-| `jolter setup` | Complete | Installs shims and prints exact current-session and persistent `PATH` commands for PowerShell, Command Prompt, Bash, Zsh, and Fish. |
-| `jolter list` | Complete for current artifacts | Lists runtimes and managed tools, active markers, paths, and readiness. |
-| `jolter doctor` | Complete for stable core | Probes versions, validates manifests and compatibility, detects conflicts, and emits remediation in text or JSON. |
-| `jolter repair` | Complete for current artifacts | Reinstalls incomplete runtime and tool installations. |
-| `jolter sync` | Complete for current schema | Makes the runtime and tool match project requirements. |
-| `jolter uninstall <tool@version>` | Complete | Removes exact versions with active-toolchain protection and shared installer locks. |
-| `jolter prune` | Complete | Preserves active, project-required, and configured newest versions; supports dry runs. |
-| `jolter cache status/clean` | Complete | Inspects and safely cleans metadata and artifact caches. |
-| `jolter setup-ci` | Complete | Synchronizes exact versions, reports cache/shim paths, emits JSON, and integrates with GitHub Actions outputs. |
-| `jolter completions` | Complete | Generates Bash, Zsh, Fish, Elvish, and PowerShell completions. |
+| Command                           | Status                         | Current behavior                                                                                                                    |
+| --------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `jolter use <tool>`               | Complete                       | Installs or reuses a runtime or tool, activates it, and installs shims. Tools require active Node.js.                               |
+| `jolter pin <runtime-or-tool>`    | Complete                       | Writes a runtime or tool requirement to `jolter.json` while preserving other entries.                                               |
+| `jolter update [target]`          | Complete                       | Updates an active runtime or tool within its major line, accepts explicit selectors, and supports `--all`.                          |
+| `jolter setup`                    | Complete                       | Installs shims and prints exact current-session and persistent `PATH` commands for PowerShell, Command Prompt, Bash, Zsh, and Fish. |
+| `jolter list`                     | Complete for current artifacts | Lists runtimes and managed tools, active markers, paths, and readiness.                                                             |
+| `jolter doctor`                   | Complete for stable core       | Probes versions, validates manifests and compatibility, detects conflicts, and emits remediation in text or JSON.                   |
+| `jolter repair`                   | Complete for current artifacts | Reinstalls incomplete runtime and tool installations.                                                                               |
+| `jolter sync`                     | Complete for current schema    | Makes the runtime and tool match project requirements.                                                                              |
+| `jolter uninstall <tool@version>` | Complete                       | Removes exact versions with active-toolchain protection and shared installer locks.                                                 |
+| `jolter prune`                    | Complete                       | Preserves active, project-required, and configured newest versions; supports dry runs.                                              |
+| `jolter cache status/clean`       | Complete                       | Inspects and safely cleans metadata and artifact caches.                                                                            |
+| `jolter setup-ci`                 | Complete                       | Synchronizes exact versions, reports cache/shim paths, emits JSON, and integrates with GitHub Actions outputs.                      |
+| `jolter completions`              | Complete                       | Generates Bash, Zsh, Fish, Elvish, and PowerShell completions.                                                                      |
 
 ### Automatic Switching and Shims
 
@@ -293,25 +293,25 @@ Remaining research:
 
 ## Specification Coverage
 
-| Specification area | Status | Notes |
-| --- | --- | --- |
-| Rust modular workspace | Complete | Nine responsibility-focused crates are present. |
-| Node.js management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
-| Bun management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
-| Deno management | Complete | Install, select, activate, sync, repair, and shim dispatch work. |
-| Tool management | Complete for built-in providers | npm, pnpm, and Yarn are installed, globally activated, project-selected, and dispatched with engine and optional Corepack hash validation. |
-| Project pinning | Complete | Runtime and multiple tool requirements can be pinned independently. |
-| Automatic switching | Complete for commands | Self-shims resolve the project on every invocation. |
-| Reproducible sync | Complete for current schema | Runtime and tool selectors are synchronized. |
-| Doctor | Complete for stable core | Version probes, manifests, engine checks, conflicts, cache, permissions, environment, and remediation are implemented. |
-| Repair | Complete for current artifacts | Incomplete runtime and tool directories are replaced safely. |
-| Security requirements | Complete for current providers | HTTPS, integrity checks, bounded extraction, and no telemetry. |
-| Telemetry | Complete by absence | No telemetry is collected. Opt-in telemetry is not implemented. |
-| Cross-platform support | Release validation | Native and WSL workflows are configured; passing hosted runs are required before 1.0. |
-| 80% coverage target | Complete | Measured line coverage is 81.95% and CI fails below 80%. |
-| Extended tool providers | Future | The `tools` manifest is implemented; providers beyond npm, pnpm, and Yarn remain future work. |
-| CI setup command | Complete | Synchronizes runtimes and tools and emits provider-neutral JSON plus GitHub Actions outputs. |
-| Plugin system | Future | Architecture boundaries help, but no public plugin API exists. |
+| Specification area      | Status                          | Notes                                                                                                                                      |
+| ----------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Rust modular workspace  | Complete                        | Nine responsibility-focused crates are present.                                                                                            |
+| Node.js management      | Complete                        | Install, select, activate, sync, repair, and shim dispatch work.                                                                           |
+| Bun management          | Complete                        | Install, select, activate, sync, repair, and shim dispatch work.                                                                           |
+| Deno management         | Complete                        | Install, select, activate, sync, repair, and shim dispatch work.                                                                           |
+| Tool management         | Complete for built-in providers | npm, pnpm, and Yarn are installed, globally activated, project-selected, and dispatched with engine and optional Corepack hash validation. |
+| Project pinning         | Complete                        | Runtime and multiple tool requirements can be pinned independently.                                                                        |
+| Automatic switching     | Complete for commands           | Self-shims resolve the project on every invocation.                                                                                        |
+| Reproducible sync       | Complete for current schema     | Runtime and tool selectors are synchronized.                                                                                               |
+| Doctor                  | Complete for stable core        | Version probes, manifests, engine checks, conflicts, cache, permissions, environment, and remediation are implemented.                     |
+| Repair                  | Complete for current artifacts  | Incomplete runtime and tool directories are replaced safely.                                                                               |
+| Security requirements   | Complete for current providers  | HTTPS, integrity checks, bounded extraction, and no telemetry.                                                                             |
+| Telemetry               | Complete by absence             | No telemetry is collected. Opt-in telemetry is not implemented.                                                                            |
+| Cross-platform support  | Release validation              | Native and WSL workflows are configured; passing hosted runs are required before 1.0.                                                      |
+| 80% coverage target     | Complete                        | Measured line coverage is 81.95% and CI fails below 80%.                                                                                   |
+| Extended tool providers | Future                          | The `tools` manifest is implemented; providers beyond npm, pnpm, and Yarn remain future work.                                              |
+| CI setup command        | Complete                        | Synchronizes runtimes and tools and emits provider-neutral JSON plus GitHub Actions outputs.                                               |
+| Plugin system           | Future                          | Architecture boundaries help, but no public plugin API exists.                                                                             |
 
 ## Release Roadmap
 

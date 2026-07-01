@@ -6,13 +6,13 @@ state.
 
 ## Public Jolter Controls
 
-| Variable | Values | Effect |
-| --- | --- | --- |
-| `JOLTER_HOME` | Non-empty path | Overrides the default `$HOME/.jolter` or `%USERPROFILE%\.jolter` root. |
-| `JOLTER_OFFLINE` | `1`, `true`, or `yes` | Disables provider metadata requests and downloads. |
-| `JOLTER_NO_PROGRESS` | `1`, `true`, or `yes` | Disables the updating progress line. |
-| `JOLTER_NO_COLOR` | Any present value | Disables ANSI color. |
-| `NO_COLOR` | Any present value | Standard ecosystem color disable. |
+| Variable             | Values                | Effect                                                                 |
+| -------------------- | --------------------- | ---------------------------------------------------------------------- |
+| `JOLTER_HOME`        | Non-empty path        | Overrides the default `$HOME/.jolter` or `%USERPROFILE%\.jolter` root. |
+| `JOLTER_OFFLINE`     | `1`, `true`, or `yes` | Disables provider metadata requests and downloads.                     |
+| `JOLTER_NO_PROGRESS` | `1`, `true`, or `yes` | Disables the updating progress line.                                   |
+| `JOLTER_NO_COLOR`    | Any present value     | Disables ANSI color.                                                   |
+| `NO_COLOR`           | Any present value     | Standard ecosystem color disable.                                      |
 
 Boolean values are case-insensitive. Values other than `1`, `true`, or `yes`
 do not enable offline or no-progress mode. Color variables follow the
@@ -81,9 +81,9 @@ specific provider flag is also set.
 
 When `GITHUB_ACTIONS` is true, `jolter setup-ci` uses:
 
-| Variable | Purpose |
-| --- | --- |
-| `GITHUB_PATH` | File that receives the Jolter shims directory. |
+| Variable        | Purpose                                                     |
+| --------------- | ----------------------------------------------------------- |
+| `GITHUB_PATH`   | File that receives the Jolter shims directory.              |
 | `GITHUB_OUTPUT` | File that receives `runtime`, `tools`, and `cache` outputs. |
 
 If either file variable is absent, Jolter skips that integration rather than
@@ -122,13 +122,13 @@ exist and should contain the intended organization CA material.
 
 Jolter reads standard environment state:
 
-| Variable | Purpose |
-| --- | --- |
-| `PATH` | Finds Jolter, evaluates shim precedence, and constructs child process paths. |
-| `SHELL` | Helps `jolter setup --shell auto` choose Bash, Zsh, or Fish. |
-| `PATHEXT` | Supports executable discovery on Windows. |
-| `HOME` | Default home discovery on Unix. |
-| `USERPROFILE` | Default home discovery on Windows. |
+| Variable      | Purpose                                                                      |
+| ------------- | ---------------------------------------------------------------------------- |
+| `PATH`        | Finds Jolter, evaluates shim precedence, and constructs child process paths. |
+| `SHELL`       | Helps `jolter setup --shell auto` choose Bash, Zsh, or Fish.                 |
+| `PATHEXT`     | Supports executable discovery on Windows.                                    |
+| `HOME`        | Default home discovery on Unix.                                              |
+| `USERPROFILE` | Default home discovery on Windows.                                           |
 
 ## Terminal Capability Detection
 
@@ -143,10 +143,10 @@ These are detection inputs, not Jolter-specific configuration. Use
 
 Jolter sets these for child processes:
 
-| Variable | Meaning |
-| --- | --- |
-| `JOLTER_RUNTIME_ROOT` | Root of the runtime selected by a shim. |
-| `JOLTER_DOCTOR` | Marks a bounded `--version` probe launched by doctor. |
+| Variable              | Meaning                                               |
+| --------------------- | ----------------------------------------------------- |
+| `JOLTER_RUNTIME_ROOT` | Root of the runtime selected by a shim.               |
+| `JOLTER_DOCTOR`       | Marks a bounded `--version` probe launched by doctor. |
 
 They are not user configuration interfaces and may change outside the public
 compatibility contract. Do not set them to influence resolution.

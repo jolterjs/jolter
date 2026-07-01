@@ -16,18 +16,18 @@ and command shims in one workspace.
 
 ## Workspace Boundaries
 
-| Crate | Owns |
-| --- | --- |
-| `cli` | Argument parsing, output rendering, shell instructions, CI adaptation, completions, and process launch. |
-| `core` | Orchestration for use, pin, update, sync, repair, lifecycle, and diagnostics. |
-| `config` | Strict project schema, upward discovery, validation, and atomic writes. |
-| `runtime` | Runtime/tool identifiers, request parsing, selectors, and hashes. |
-| `installer` | Provider metadata, HTTP, retry, cache, integrity, extraction, locking, and publication. |
-| `plugin` | Registry resolution, plugin release manifests, WASM artifact verification, and plugin inventory. |
-| `resolver` | Project-source precedence and normalized requirements. |
-| `shim` | Shim generation and command-to-installation selection. |
-| `doctor` | Storage, project, installation, command-routing, network, and cache checks. |
-| `storage` | Directory layout, inventory, active selections, and filesystem statistics. |
+| Crate       | Owns                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------- |
+| `cli`       | Argument parsing, output rendering, shell instructions, CI adaptation, completions, and process launch. |
+| `core`      | Orchestration for use, pin, update, sync, repair, lifecycle, and diagnostics.                           |
+| `config`    | Strict project schema, upward discovery, validation, and atomic writes.                                 |
+| `runtime`   | Runtime/tool identifiers, request parsing, selectors, and hashes.                                       |
+| `installer` | Provider metadata, HTTP, retry, cache, integrity, extraction, locking, and publication.                 |
+| `plugin`    | Registry resolution, plugin release manifests, WASM artifact verification, and plugin inventory.        |
+| `resolver`  | Project-source precedence and normalized requirements.                                                  |
+| `shim`      | Shim generation and command-to-installation selection.                                                  |
+| `doctor`    | Storage, project, installation, command-routing, network, and cache checks.                             |
+| `storage`   | Directory layout, inventory, active selections, and filesystem statistics.                              |
 
 Dependencies point toward domain types and storage rather than terminal
 presentation. Installer and core operations emit progress events through a

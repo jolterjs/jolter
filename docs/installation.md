@@ -73,12 +73,12 @@ Continue with [getting started](getting-started.md).
 
 Tagged releases currently publish:
 
-| Platform | Architecture | Rust target |
-| --- | --- | --- |
-| Windows | x64 | `x86_64-pc-windows-msvc` |
-| Linux | x64 | `x86_64-unknown-linux-gnu` |
-| macOS | Intel x64 | `x86_64-apple-darwin` |
-| macOS | Apple Silicon | `aarch64-apple-darwin` |
+| Platform | Architecture  | Rust target                |
+| -------- | ------------- | -------------------------- |
+| Windows  | x64           | `x86_64-pc-windows-msvc`   |
+| Linux    | x64           | `x86_64-unknown-linux-gnu` |
+| macOS    | Intel x64     | `x86_64-apple-darwin`      |
+| macOS    | Apple Silicon | `aarch64-apple-darwin`     |
 
 WSL uses the Linux x64 build. Runtime providers can impose additional
 requirements; for example, the available Bun x64 artifact may require CPU

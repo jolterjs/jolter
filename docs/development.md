@@ -24,17 +24,17 @@ Unix:   target/debug/jolter
 
 ## Workspace Layout
 
-| Crate | Responsibility |
-| --- | --- |
-| `cli` | Command parsing, terminal output, shell setup, CI integration, and shim dispatch. |
-| `core` | User-operation orchestration. |
-| `config` | `jolter.json` parsing, validation, discovery, and atomic writes. |
-| `runtime` | Runtime/tool identities and selector semantics. |
-| `installer` | Providers, networking, cache, integrity, extraction, and publication. |
-| `resolver` | Project requirement discovery and precedence. |
-| `shim` | Shim installation and command target resolution. |
-| `doctor` | Non-destructive environment and installation checks. |
-| `storage` | Filesystem layout, inventory, activation, and statistics. |
+| Crate       | Responsibility                                                                    |
+| ----------- | --------------------------------------------------------------------------------- |
+| `cli`       | Command parsing, terminal output, shell setup, CI integration, and shim dispatch. |
+| `core`      | User-operation orchestration.                                                     |
+| `config`    | `jolter.json` parsing, validation, discovery, and atomic writes.                  |
+| `runtime`   | Runtime/tool identities and selector semantics.                                   |
+| `installer` | Providers, networking, cache, integrity, extraction, and publication.             |
+| `resolver`  | Project requirement discovery and precedence.                                     |
+| `shim`      | Shim installation and command target resolution.                                  |
+| `doctor`    | Non-destructive environment and installation checks.                              |
+| `storage`   | Filesystem layout, inventory, activation, and statistics.                         |
 
 Read [architecture](architecture.md) before changing behavior across crate
 boundaries.
