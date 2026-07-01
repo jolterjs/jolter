@@ -1,5 +1,5 @@
 [package]
-name = "jolter-core"
+name = "jolter-plugin"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,15 +7,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-jolter-config = { path = "../config" }
-jolter-doctor = { path = "../doctor" }
-jolter-installer = { path = "../installer" }
-jolter-plugin = { path = "../plugin" }
-jolter-resolver = { path = "../resolver" }
-jolter-runtime = { path = "../runtime" }
-jolter-shim = { path = "../shim" }
 jolter-storage = { path = "../storage" }
+reqwest.workspace = true
 semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

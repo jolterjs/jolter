@@ -16,6 +16,7 @@ use clap_complete::{
 };
 use jolter_core::{Jolter, PruneOutcome, SyncOutcome};
 use jolter_doctor::CheckStatus;
+use jolter_plugin::PluginRequest;
 use jolter_runtime::{RuntimeKind, RuntimeRequest, ToolKind, ToolRequest};
 use jolter_shim::{resolve_command, target_for_command};
 use jolter_storage::Storage;
@@ -82,6 +83,7 @@ enum Command {
         all: bool,
     },
     /// List locally installed runtimes and tools.
+    #[command(visible_aliases = ["list", "ls"])]
     List {
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -94,9 +96,22 @@ enum Command {
         json: bool,
     },
     /// Repair detected toolchain problems.
-    Repair,
+    Repair {
+        /// Install missing project plugins without prompting.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Synchronize the local toolchain with project requirements.
-    Sync,
+    Sync {
+        /// Install missing project plugins without prompting.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Install, update, list, or remove Jolter plugins.
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
     /// Remove one exact runtime or tool version.
     #[command(visible_aliases = ["remove", "rm"])]
     Uninstall {
@@ -126,6 +141,9 @@ enum Command {
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
+        /// Install missing project plugins without prompting.
+        #[arg(long)]
+        yes: bool,
     },
     /// Generate shell completion scripts.
     #[command(visible_aliases = ["c", "comp"])]
@@ -142,6 +160,42 @@ enum CacheCommand {
     Status,
     /// Remove cached downloads and release metadata.
     Clean,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum PluginCommand {
+    /// Install a plugin globally.
+    #[command(visible_aliases = ["add", "i"])]
+    Install {
+        /// Plugin request, for example eslint, eslint@1, or @eslint/eslint@1.
+        #[arg(value_parser = parse_plugin_request)]
+        target: PluginRequest,
+    },
+    /// List installed plugins.
+    #[command(visible_aliases = ["list", "ls"])]
+    List {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Update installed plugins.
+    #[command(visible_aliases = ["up"])]
+    Update {
+        /// Plugin name or alias to update.
+        target: Option<String>,
+        /// Update every installed plugin.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Remove an installed plugin.
+    #[command(visible_aliases = ["remove", "rm"])]
+    Uninstall {
+        /// Plugin name or alias.
+        name: String,
+        /// Permit removal when plugin commands are shimmed.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -163,6 +217,7 @@ enum UninstallTarget {
 enum UseTarget {
     Runtime(RuntimeRequest),
     Tool(ToolRequest),
+    PluginTool { name: String, selector: String },
 }
 
 #[derive(Debug, Clone)]
@@ -227,12 +282,15 @@ fn main() -> ExitCode {
 }
 
 impl Cli {
-    const fn machine_output(&self) -> bool {
+    fn machine_output(&self) -> bool {
         matches!(
             &self.command,
             Command::List { json: true }
                 | Command::Doctor { json: true }
-                | Command::SetupCi { json: true }
+                | Command::SetupCi { json: true, .. }
+                | Command::Plugin {
+                    command: PluginCommand::List { json: true },
+                }
                 | Command::Completions { .. }
         )
     }
@@ -254,6 +312,9 @@ fn run(cli: Cli, ui: &Arc<TerminalUi>) -> Result<ExitCode, CliError> {
             match target {
                 UseTarget::Runtime(request) => jolter.pin_runtime(&current_dir, &request)?,
                 UseTarget::Tool(request) => jolter.pin_tool(&current_dir, &request)?,
+                UseTarget::PluginTool { name, selector } => {
+                    jolter.pin_plugin_tool(&current_dir, &name, &selector)?;
+                }
             }
             ui.success(format!(
                 "Pinned {pinned} in {}",
@@ -272,22 +333,23 @@ fn run(cli: Cli, ui: &Arc<TerminalUi>) -> Result<ExitCode, CliError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Doctor { json } => run_doctor(&jolter, &current_dir, json, ui),
-        Command::Sync => {
-            let outcome = jolter.sync(&current_dir)?;
+        Command::Sync { yes } => {
+            let outcome = jolter.sync_with_plugin_install(&current_dir, yes)?;
             install_shims(&jolter)?;
             print_sync_outcome("Synchronized", &outcome, ui);
             Ok(ExitCode::SUCCESS)
         }
-        Command::Repair => {
-            let outcome = jolter.repair(&current_dir)?;
+        Command::Repair { yes } => {
+            let outcome = jolter.repair_with_plugin_install(&current_dir, yes)?;
             install_shims(&jolter)?;
             print_sync_outcome("Repaired", &outcome, ui);
             Ok(ExitCode::SUCCESS)
         }
+        Command::Plugin { command } => run_plugin(&jolter, command, ui),
         Command::Uninstall { target, force } => run_uninstall(&jolter, target, force, ui),
         Command::Prune { keep, dry_run } => run_prune(&jolter, &current_dir, keep, dry_run, ui),
         Command::Cache { command } => run_cache(&jolter, command, ui),
-        Command::SetupCi { json } => run_setup_ci(&jolter, &current_dir, json, ui),
+        Command::SetupCi { json, yes } => run_setup_ci(&jolter, &current_dir, json, yes, ui),
         Command::Completions { shell } => {
             ui.finish_progress();
             print_completions(shell);
@@ -326,6 +388,77 @@ fn run_use(jolter: &Jolter, target: UseTarget, ui: &TerminalUi) -> Result<ExitCo
                 action.tool.kind,
                 action.tool.version,
                 action.tool.path.display()
+            ));
+        }
+        UseTarget::PluginTool { name, .. } => {
+            return Err(jolter_core::CoreError::DirectPluginToolUseUnsupported(name).into());
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_plugin(
+    jolter: &Jolter,
+    command: PluginCommand,
+    ui: &TerminalUi,
+) -> Result<ExitCode, CliError> {
+    match command {
+        PluginCommand::Install { target } => {
+            let action = jolter.install_plugin(&target)?;
+            install_shims(jolter)?;
+            ui.success(format!(
+                "Installed plugin {}@{} at {}",
+                action.plugin.canonical_name,
+                action.plugin.version,
+                action.plugin.path.display()
+            ));
+        }
+        PluginCommand::List { json } => {
+            if json {
+                ui.finish_progress();
+                print_plugins_json(jolter)?;
+            } else {
+                print_plugins(jolter, ui)?;
+            }
+        }
+        PluginCommand::Update { target, all } => {
+            if all {
+                let mut names = jolter
+                    .list_plugins()?
+                    .into_iter()
+                    .map(|plugin| plugin.canonical_name)
+                    .collect::<Vec<_>>();
+                names.sort();
+                names.dedup();
+                if names.is_empty() {
+                    ui.info("No plugins installed.");
+                    return Ok(ExitCode::SUCCESS);
+                }
+                for name in names {
+                    let action = jolter.update_plugin(&name)?;
+                    ui.success(format!(
+                        "Updated plugin {}@{}",
+                        action.plugin.canonical_name, action.plugin.version
+                    ));
+                }
+                install_shims(jolter)?;
+            } else {
+                let target = target.ok_or(CliError::PluginUpdateTargetRequired)?;
+                let action = jolter.update_plugin(&target)?;
+                install_shims(jolter)?;
+                ui.success(format!(
+                    "Updated plugin {}@{}",
+                    action.plugin.canonical_name, action.plugin.version
+                ));
+            }
+        }
+        PluginCommand::Uninstall { name, force } => {
+            let outcome = jolter.uninstall_plugin(&name, force)?;
+            install_shims(jolter)?;
+            ui.success(format!(
+                "Uninstalled plugin from {} ({})",
+                outcome.path.display(),
+                human_bytes(outcome.reclaimed_bytes)
             ));
         }
     }
@@ -521,9 +654,10 @@ fn run_setup_ci(
     jolter: &Jolter,
     project: &Path,
     json: bool,
+    yes: bool,
     ui: &TerminalUi,
 ) -> Result<ExitCode, CliError> {
-    let outcome = jolter.sync(project)?;
+    let outcome = jolter.sync_with_plugin_install(project, yes)?;
     install_shims(jolter)?;
     let provider = configure_ci_environment(jolter, &outcome)?;
     if json {
@@ -541,7 +675,8 @@ fn run_setup_ci(
 fn print_inventory(jolter: &Jolter, ui: &TerminalUi) -> Result<(), CliError> {
     let runtimes = jolter.list()?;
     let tools = jolter.list_tools()?;
-    if runtimes.is_empty() && tools.is_empty() {
+    let plugins = jolter.list_plugins()?;
+    if runtimes.is_empty() && tools.is_empty() && plugins.is_empty() {
         ui.info("No runtimes or tools installed.");
         return Ok(());
     }
@@ -583,6 +718,25 @@ fn print_inventory(jolter: &Jolter, ui: &TerminalUi) -> Result<(), CliError> {
         }
         ui.table(&rows);
     }
+    if !plugins.is_empty() {
+        ui.heading("Plugins");
+        let rows = plugins
+            .into_iter()
+            .map(|plugin| {
+                TableRow::new(
+                    ' ',
+                    format!("{}@{}", plugin.canonical_name, plugin.version),
+                    if plugin.path.join(".jolter-plugin.json").is_file() {
+                        "[ready]"
+                    } else {
+                        "[incomplete]"
+                    },
+                    plugin.path.display().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        ui.table(&rows);
+    }
     Ok(())
 }
 
@@ -615,13 +769,73 @@ fn print_inventory_json(jolter: &Jolter) -> Result<(), CliError> {
             }))
         })
         .collect::<Result<Vec<_>, jolter_storage::StorageError>>()?;
+    let plugins = jolter
+        .list_plugins()?
+        .into_iter()
+        .map(|plugin| {
+            serde_json::json!({
+                "name": plugin.canonical_name,
+                "version": plugin.version.to_string(),
+                "path": plugin.path,
+                "ready": plugin.path.join(".jolter-plugin.json").is_file(),
+            })
+        })
+        .collect::<Vec<_>>();
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "runtimes": runtimes,
             "tools": tools,
+            "plugins": plugins,
         }))
         .map_err(CliError::Json)?
+    );
+    Ok(())
+}
+
+fn print_plugins(jolter: &Jolter, ui: &TerminalUi) -> Result<(), CliError> {
+    let plugins = jolter.list_plugins()?;
+    if plugins.is_empty() {
+        ui.info("No plugins installed.");
+        return Ok(());
+    }
+    ui.heading("Plugins");
+    let rows = plugins
+        .into_iter()
+        .map(|plugin| {
+            TableRow::new(
+                ' ',
+                format!("{}@{}", plugin.canonical_name, plugin.version),
+                if plugin.path.join(".jolter-plugin.json").is_file() {
+                    "[ready]"
+                } else {
+                    "[incomplete]"
+                },
+                plugin.path.display().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    ui.table(&rows);
+    Ok(())
+}
+
+fn print_plugins_json(jolter: &Jolter) -> Result<(), CliError> {
+    let plugins = jolter
+        .list_plugins()?
+        .into_iter()
+        .map(|plugin| {
+            serde_json::json!({
+                "name": plugin.canonical_name,
+                "version": plugin.version.to_string(),
+                "path": plugin.path,
+                "ready": plugin.path.join(".jolter-plugin.json").is_file(),
+            })
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({ "plugins": plugins }))
+            .map_err(CliError::Json)?
     );
     Ok(())
 }
@@ -813,6 +1027,14 @@ fn print_sync_outcome(prefix: &str, outcome: &SyncOutcome, ui: &TerminalUi) {
             tool.tool.path.display()
         ));
     }
+    for plugin in &outcome.plugins {
+        ui.success(format!(
+            "Selected plugin {}@{} at {}",
+            plugin.plugin.canonical_name,
+            plugin.plugin.version,
+            plugin.plugin.path.display()
+        ));
+    }
 }
 
 fn print_prune_outcome(outcome: &PruneOutcome, ui: &TerminalUi) {
@@ -868,6 +1090,15 @@ fn configure_ci_environment(
                 .collect::<Vec<_>>()
                 .join(",");
             append_ci_line("GITHUB_OUTPUT", &format!("tools={tools}"))?;
+        }
+        if !outcome.plugins.is_empty() {
+            let plugins = outcome
+                .plugins
+                .iter()
+                .map(|action| format!("{}@{}", action.plugin.canonical_name, action.plugin.version))
+                .collect::<Vec<_>>()
+                .join(",");
+            append_ci_line("GITHUB_OUTPUT", &format!("plugins={plugins}"))?;
         }
         append_ci_line(
             "GITHUB_OUTPUT",
@@ -935,6 +1166,17 @@ fn print_ci_json(jolter: &Jolter, outcome: &SyncOutcome, provider: &str) -> Resu
             })
         })
         .collect::<Vec<_>>();
+    let plugins = outcome
+        .plugins
+        .iter()
+        .map(|action| {
+            serde_json::json!({
+                "name": action.plugin.canonical_name,
+                "version": action.plugin.version.to_string(),
+                "path": action.plugin.path,
+            })
+        })
+        .collect::<Vec<_>>();
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -945,6 +1187,7 @@ fn print_ci_json(jolter: &Jolter, outcome: &SyncOutcome, provider: &str) -> Resu
                 "path": outcome.runtime.path,
             },
             "tools": tools,
+            "plugins": plugins,
             "shims": jolter.storage().shims_dir(),
             "cache": jolter.storage().cache_dir(),
         }))
@@ -968,7 +1211,7 @@ fn print_completions(shell: CompletionShell) {
 }
 
 fn parse_use_target(value: &str) -> Result<UseTarget, String> {
-    let (name, _) = value
+    let (name, selector) = value
         .rsplit_once('@')
         .ok_or_else(|| "expected <runtime-or-tool>@<version>".to_owned())?;
     match name.to_ascii_lowercase().as_str() {
@@ -980,10 +1223,43 @@ fn parse_use_target(value: &str) -> Result<UseTarget, String> {
             .parse()
             .map(UseTarget::Tool)
             .map_err(|error: jolter_runtime::ToolRequestError| error.to_string()),
-        _ => Err(format!(
-            "unsupported tool `{name}`; expected node, bun, deno, npm, pnpm, or yarn"
-        )),
+        _ => {
+            validate_plugin_tool_target(name, selector)?;
+            Ok(UseTarget::PluginTool {
+                name: name.to_owned(),
+                selector: selector.to_owned(),
+            })
+        }
     }
+}
+
+fn validate_plugin_tool_target(name: &str, selector: &str) -> Result<(), String> {
+    let valid_name = !name.is_empty()
+        && name.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_' | '-')
+        });
+    let valid_selector = selector.eq_ignore_ascii_case("latest")
+        || selector.split('.').all(|part| {
+            !part.is_empty()
+                && (part == "*"
+                    || part.eq_ignore_ascii_case("x")
+                    || part.chars().all(|character| character.is_ascii_digit()))
+        });
+    if valid_name && valid_selector {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported tool `{name}`; expected a built-in tool or a lowercase plugin-provided tool"
+        ))
+    }
+}
+
+fn parse_plugin_request(value: &str) -> Result<PluginRequest, String> {
+    value
+        .parse()
+        .map_err(|error: jolter_plugin::PluginError| error.to_string())
 }
 
 impl std::fmt::Display for UseTarget {
@@ -991,16 +1267,20 @@ impl std::fmt::Display for UseTarget {
         match self {
             Self::Runtime(request) => request.fmt(formatter),
             Self::Tool(request) => request.fmt(formatter),
+            Self::PluginTool { name, selector } => write!(formatter, "{name}@{selector}"),
         }
     }
 }
 
 fn parse_update_target(value: &str) -> Result<UpdateTarget, String> {
     if value.contains('@') {
-        return parse_use_target(value).map(|target| match target {
-            UseTarget::Runtime(request) => UpdateTarget::Runtime(request.kind, Some(request)),
-            UseTarget::Tool(request) => UpdateTarget::Tool(request.kind, Some(request)),
-        });
+        return match parse_use_target(value)? {
+            UseTarget::Runtime(request) => Ok(UpdateTarget::Runtime(request.kind, Some(request))),
+            UseTarget::Tool(request) => Ok(UpdateTarget::Tool(request.kind, Some(request))),
+            UseTarget::PluginTool { name, .. } => Err(format!(
+                "plugin-provided tool `{name}` updates are managed by `jolter sync --yes`"
+            )),
+        };
     }
     match value.to_ascii_lowercase().as_str() {
         "node" | "nodejs" | "bun" | "deno" => value
@@ -1068,7 +1348,7 @@ fn invoked_shim() -> Option<String> {
         .file_stem()?
         .to_string_lossy()
         .to_ascii_lowercase();
-    target_for_command(&name).is_some().then_some(name)
+    (name != "jolter" && (target_for_command(&name).is_some() || !name.is_empty())).then_some(name)
 }
 
 fn run_shim(shim: &str) -> Result<ExitCode, CliError> {
@@ -1136,6 +1416,8 @@ enum CliError {
     Storage(#[from] jolter_storage::StorageError),
     #[error("no active {0} version; pass an explicit selector such as {0}@latest")]
     NoActiveUpdateTarget(String),
+    #[error("pass a plugin name or use `jolter plugin update --all`")]
+    PluginUpdateTargetRequired,
     #[error("invalid update request: {0}")]
     UpdateRequest(String),
     #[error("failed to determine the current directory: {0}")]

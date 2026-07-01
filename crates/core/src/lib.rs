@@ -10,9 +10,10 @@ use jolter_installer::{
     CacheCleanOutcome, InstallOutcome, Installer, NoProgressReporter, RemovalOutcome,
     ToolInstallOutcome,
 };
+use jolter_plugin::{PluginManager, PluginRequest, read_installed_manifest};
 use jolter_resolver::resolve;
 use jolter_runtime::{RuntimeKind, RuntimeRequest, ToolKind, ToolRequest};
-use jolter_storage::{CacheStats, InstalledRuntime, InstalledTool, Storage};
+use jolter_storage::{CacheStats, InstalledPlugin, InstalledRuntime, InstalledTool, Storage};
 use semver::Version;
 use thiserror::Error;
 
@@ -21,6 +22,7 @@ pub use jolter_installer::{ProgressAction, ProgressEvent, ProgressReporter};
 pub struct Jolter {
     storage: Storage,
     installer: Installer,
+    plugins: PluginManager,
     reporter: Arc<dyn ProgressReporter>,
 }
 
@@ -43,9 +45,11 @@ impl Jolter {
     ) -> Result<Self, CoreError> {
         storage.ensure_layout()?;
         let installer = Installer::new_with_reporter(storage.clone(), reporter.clone())?;
+        let plugins = PluginManager::new(storage.clone())?;
         Ok(Self {
             storage,
             installer,
+            plugins,
             reporter,
         })
     }
@@ -90,6 +94,41 @@ impl Jolter {
         config
             .tools
             .insert(request.kind.to_string(), selector.to_owned());
+        config.write_to(&path)?;
+        Ok(())
+    }
+
+    pub fn pin_plugin_tool(
+        &self,
+        project: &Path,
+        name: &str,
+        selector: &str,
+    ) -> Result<(), CoreError> {
+        let path = project.join(CONFIG_FILE_NAME);
+        let target = path.display().to_string();
+        self.report(ProgressAction::Configure, &target);
+        let mut config = if path.is_file() {
+            ProjectConfig::from_path(&path)?
+        } else {
+            ProjectConfig::default()
+        };
+        config.schema_version = jolter_config::CURRENT_SCHEMA_VERSION;
+        config.tools.insert(name.to_owned(), selector.to_owned());
+        config.write_to(&path)?;
+        Ok(())
+    }
+
+    pub fn pin_plugin(&self, project: &Path, name: &str, selector: &str) -> Result<(), CoreError> {
+        let path = project.join(CONFIG_FILE_NAME);
+        let target = path.display().to_string();
+        self.report(ProgressAction::Configure, &target);
+        let mut config = if path.is_file() {
+            ProjectConfig::from_path(&path)?
+        } else {
+            ProjectConfig::default()
+        };
+        config.schema_version = jolter_config::CURRENT_SCHEMA_VERSION;
+        config.plugins.insert(name.to_owned(), selector.to_owned());
         config.write_to(&path)?;
         Ok(())
     }
@@ -179,6 +218,10 @@ impl Jolter {
         Ok(self.storage.installed_tools()?)
     }
 
+    pub fn list_plugins(&self) -> Result<Vec<InstalledPlugin>, CoreError> {
+        Ok(self.storage.installed_plugins()?)
+    }
+
     pub fn doctor(&self, project: &Path) -> Result<Report, CoreError> {
         let target = project.display().to_string();
         self.report(ProgressAction::Diagnose, &target);
@@ -186,11 +229,62 @@ impl Jolter {
     }
 
     pub fn sync(&self, project: &Path) -> Result<SyncOutcome, CoreError> {
-        self.sync_inner(project, false)
+        self.sync_inner(project, false, false)
     }
 
     pub fn repair(&self, project: &Path) -> Result<SyncOutcome, CoreError> {
-        self.sync_inner(project, true)
+        self.sync_inner(project, true, false)
+    }
+
+    pub fn sync_with_plugin_install(
+        &self,
+        project: &Path,
+        yes: bool,
+    ) -> Result<SyncOutcome, CoreError> {
+        self.sync_inner(project, false, yes)
+    }
+
+    pub fn repair_with_plugin_install(
+        &self,
+        project: &Path,
+        yes: bool,
+    ) -> Result<SyncOutcome, CoreError> {
+        self.sync_inner(project, true, yes)
+    }
+
+    pub fn install_plugin(&self, request: &PluginRequest) -> Result<PluginAction, CoreError> {
+        let target = request.to_string();
+        self.report(ProgressAction::Resolve, &target);
+        let plugin = self.plugins.install(request)?;
+        Ok(PluginAction { plugin })
+    }
+
+    pub fn update_plugin(&self, name: &str) -> Result<PluginAction, CoreError> {
+        self.install_plugin(&PluginRequest::new(name, "latest")?)
+    }
+
+    pub fn uninstall_plugin(&self, name: &str, force: bool) -> Result<RemovalOutcome, CoreError> {
+        let canonical = if name.starts_with('@') {
+            name.to_ascii_lowercase()
+        } else {
+            self.plugins.resolve_name(name)?
+        };
+        if !force && self.plugin_commands_in_active_shims(&canonical)? {
+            return Err(CoreError::ActivePluginRemoval(canonical));
+        }
+        let path = self.storage.plugin_dir(&canonical);
+        let reclaimed_bytes = self.storage.path_stats(&path)?.bytes;
+        if !path.exists() {
+            return Err(CoreError::PluginNotInstalled(canonical));
+        }
+        std::fs::remove_dir_all(&path).map_err(|source| CoreError::PluginRemoval {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(RemovalOutcome {
+            path,
+            reclaimed_bytes,
+        })
     }
 
     pub fn uninstall_runtime(
@@ -344,8 +438,14 @@ impl Jolter {
         Ok(jolter_shim::install_shims(executable, &self.storage)?)
     }
 
-    fn sync_inner(&self, project: &Path, repair: bool) -> Result<SyncOutcome, CoreError> {
+    fn sync_inner(
+        &self,
+        project: &Path,
+        repair: bool,
+        yes: bool,
+    ) -> Result<SyncOutcome, CoreError> {
         let resolution = resolve(project)?;
+        let plugin_actions = self.ensure_project_plugins(&resolution, yes)?;
         let runtime = resolution
             .runtime
             .ok_or_else(|| CoreError::NoRuntimeRequirement(project.to_path_buf()))?;
@@ -370,11 +470,81 @@ impl Jolter {
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
 
+        if !resolution.plugin_tools.is_empty() {
+            for plugin_tool in &resolution.plugin_tools {
+                let provider = self.find_plugin_for_tool(&plugin_tool.name)?;
+                let target = format!(
+                    "{} via {}@{}",
+                    plugin_tool.name, provider.canonical_name, provider.version
+                );
+                self.report(ProgressAction::Resolve, &target);
+            }
+        }
+
         Ok(SyncOutcome {
             runtime: action.runtime,
             downloaded: action.downloaded,
             tools,
+            plugins: plugin_actions,
         })
+    }
+
+    fn ensure_project_plugins(
+        &self,
+        resolution: &jolter_resolver::ProjectResolution,
+        yes: bool,
+    ) -> Result<Vec<PluginAction>, CoreError> {
+        let mut actions = Vec::new();
+        for requirement in &resolution.plugins {
+            let request = PluginRequest::new(&requirement.name, &requirement.selector)?;
+            let canonical = if requirement.name.starts_with('@') {
+                requirement.name.to_ascii_lowercase()
+            } else {
+                self.plugins.resolve_name(&requirement.name)?
+            };
+            if let Some(plugin) = self
+                .storage
+                .find_matching_plugin(&canonical, &requirement.selector)?
+            {
+                self.report(
+                    ProgressAction::Reuse,
+                    &format!("{}@{}", plugin.canonical_name, plugin.version),
+                );
+                actions.push(PluginAction { plugin });
+                continue;
+            }
+            if !yes {
+                return Err(CoreError::MissingProjectPlugin {
+                    name: requirement.name.clone(),
+                    selector: requirement.selector.clone(),
+                });
+            }
+            actions.push(self.install_plugin(&request)?);
+        }
+        Ok(actions)
+    }
+
+    fn find_plugin_for_tool(&self, tool: &str) -> Result<InstalledPlugin, CoreError> {
+        for plugin in self.storage.installed_plugins()?.into_iter().rev() {
+            let manifest = read_installed_manifest(&plugin.path)?;
+            if manifest.provides.tools.contains_key(tool) {
+                return Ok(plugin);
+            }
+        }
+        Err(CoreError::PluginToolProviderMissing(tool.to_owned()))
+    }
+
+    fn plugin_commands_in_active_shims(&self, canonical: &str) -> Result<bool, CoreError> {
+        Ok(self
+            .storage
+            .installed_plugins()?
+            .into_iter()
+            .filter(|plugin| plugin.canonical_name == canonical)
+            .any(|plugin| {
+                read_installed_manifest(&plugin.path)
+                    .map(|manifest| !manifest.commands.is_empty())
+                    .unwrap_or(false)
+            }))
     }
 
     fn ensure_runtime(
@@ -476,6 +646,7 @@ pub struct SyncOutcome {
     pub runtime: InstalledRuntime,
     pub downloaded: bool,
     pub tools: Vec<ToolAction>,
+    pub plugins: Vec<PluginAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,6 +654,11 @@ pub struct ToolAction {
     pub request: ToolRequest,
     pub tool: InstalledTool,
     pub downloaded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginAction {
+    pub plugin: InstalledPlugin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -539,12 +715,32 @@ pub enum CoreError {
         "refusing to uninstall active {kind}@{version}; activate another version or pass --force"
     )]
     ActiveToolRemoval { kind: ToolKind, version: Version },
+    #[error("project requires plugin {name}@{selector}; rerun with `--yes` to install it")]
+    MissingProjectPlugin { name: String, selector: String },
+    #[error("no installed plugin provides tool `{0}`")]
+    PluginToolProviderMissing(String),
+    #[error(
+        "direct use of plugin-provided tool `{0}` is not available yet; add it to jolter.json and run `jolter sync --yes`"
+    )]
+    DirectPluginToolUseUnsupported(String),
+    #[error("plugin `{0}` is installed with active shim commands; pass --force to remove it")]
+    ActivePluginRemoval(String),
+    #[error("plugin `{0}` is not installed")]
+    PluginNotInstalled(String),
+    #[error("failed to remove plugin at {path}: {source}")]
+    PluginRemoval {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error(transparent)]
     Config(#[from] jolter_config::ConfigError),
     #[error(transparent)]
     Doctor(#[from] jolter_doctor::DoctorError),
     #[error(transparent)]
     Installer(#[from] jolter_installer::InstallerError),
+    #[error(transparent)]
+    Plugin(#[from] jolter_plugin::PluginError),
     #[error(transparent)]
     Resolver(#[from] jolter_resolver::ResolverError),
     #[error(transparent)]
@@ -564,9 +760,14 @@ mod tests {
         let mut tools = BTreeMap::new();
         tools.insert("pnpm".to_owned(), "10.x".to_owned());
         ProjectConfig {
+            schema_url: Some(
+                jolter_config::schema_url_for_version(jolter_config::CURRENT_SCHEMA_VERSION)
+                    .to_owned(),
+            ),
             schema_version: jolter_config::CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
             tools,
+            plugins: BTreeMap::new(),
         }
         .write_to(&temp.path().join(CONFIG_FILE_NAME))
         .unwrap();
@@ -586,6 +787,10 @@ mod tests {
     fn pin_tool_preserves_runtime_and_other_tools() {
         let temp = tempfile::tempdir().unwrap();
         ProjectConfig {
+            schema_url: Some(
+                jolter_config::schema_url_for_version(jolter_config::CURRENT_SCHEMA_VERSION)
+                    .to_owned(),
+            ),
             schema_version: jolter_config::CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig {
                 node: Some("24".to_owned()),
@@ -593,6 +798,7 @@ mod tests {
                 deno: None,
             },
             tools: BTreeMap::from([("pnpm".to_owned(), "10".to_owned())]),
+            plugins: BTreeMap::new(),
         }
         .write_to(&temp.path().join(CONFIG_FILE_NAME))
         .unwrap();

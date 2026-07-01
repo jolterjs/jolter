@@ -8,11 +8,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const CONFIG_FILE_NAME: &str = "jolter.json";
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const MIN_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_SCHEMA_BASE_URL: &str = "https://schemas.jolter.dev/project";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectConfig {
+    #[serde(default, rename = "$schema", skip_serializing_if = "Option::is_none")]
+    pub schema_url: Option<String>,
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "RuntimeConfig::is_empty")]
@@ -23,14 +27,18 @@ pub struct ProjectConfig {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub tools: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, String>,
 }
 
 impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
+            schema_url: Some(schema_url_for_version(CURRENT_SCHEMA_VERSION).to_owned()),
             schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
             tools: BTreeMap::new(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -51,8 +59,10 @@ impl ProjectConfig {
     }
 
     pub fn write_to(&self, path: &Path) -> Result<(), ConfigError> {
-        self.validate()?;
-        let contents = serde_json::to_string_pretty(self)
+        let mut config = self.clone();
+        config.schema_url = Some(schema_url_for_version(config.schema_version).to_owned());
+        config.validate()?;
+        let contents = serde_json::to_string_pretty(&config)
             .map_err(|source| ConfigError::Serialize { source })?;
         let parent = path.parent().ok_or_else(|| ConfigError::InvalidPath {
             path: path.to_path_buf(),
@@ -82,21 +92,39 @@ impl ProjectConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.schema_version != CURRENT_SCHEMA_VERSION {
+        if !(MIN_SCHEMA_VERSION..=CURRENT_SCHEMA_VERSION).contains(&self.schema_version) {
             return Err(ConfigError::UnsupportedSchemaVersion {
                 found: self.schema_version,
                 supported: CURRENT_SCHEMA_VERSION,
             });
         }
+        if let Some(schema_url) = &self.schema_url {
+            let expected = schema_url_for_version(self.schema_version);
+            if schema_url != expected {
+                return Err(ConfigError::SchemaUrlMismatch {
+                    found: schema_url.clone(),
+                    expected: expected.to_owned(),
+                });
+            }
+        }
         let configured_runtimes = self.runtime.configured_count();
         if configured_runtimes > 1 {
             return Err(ConfigError::MultipleRuntimes);
         }
-        for (name, selector) in self.runtime.entries().chain(
-            self.tools
-                .iter()
-                .map(|(name, value)| (name.as_str(), value.as_str())),
-        ) {
+        for (name, selector) in self
+            .runtime
+            .entries()
+            .chain(
+                self.tools
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str())),
+            )
+            .chain(
+                self.plugins
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str())),
+            )
+        {
             if selector.trim().is_empty() {
                 return Err(ConfigError::EmptySelector(name.to_owned()));
             }
@@ -105,7 +133,30 @@ impl ProjectConfig {
             jolter_runtime::RuntimeRequest::new(name.parse()?, selector)?;
         }
         for (name, selector) in &self.tools {
-            jolter_runtime::ToolRequest::new(name.parse()?, selector)?;
+            if let Ok(kind) = name.parse() {
+                jolter_runtime::ToolRequest::new(kind, selector)?;
+            } else if self.schema_version < 2 || self.plugins.is_empty() {
+                return Err(ConfigError::Tool(
+                    jolter_runtime::ToolRequestError::UnsupportedTool(name.clone()),
+                ));
+            } else {
+                validate_plugin_tool_name(name)?;
+                validate_numeric_selector(selector).map_err(|()| {
+                    ConfigError::InvalidPluginToolSelector {
+                        name: name.clone(),
+                        selector: selector.clone(),
+                    }
+                })?;
+            }
+        }
+        for (name, selector) in &self.plugins {
+            validate_plugin_name(name)?;
+            validate_numeric_selector(selector).map_err(|()| {
+                ConfigError::InvalidPluginSelector {
+                    name: name.clone(),
+                    selector: selector.clone(),
+                }
+            })?;
         }
         Ok(())
     }
@@ -113,6 +164,15 @@ impl ProjectConfig {
 
 const fn default_schema_version() -> u32 {
     CURRENT_SCHEMA_VERSION
+}
+
+#[must_use]
+pub fn schema_url_for_version(version: u32) -> &'static str {
+    match version {
+        1 => "https://schemas.jolter.dev/project/v1/schema.json",
+        2 => "https://schemas.jolter.dev/project/v2/schema.json",
+        _ => "https://schemas.jolter.dev/project/v2/schema.json",
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,14 +247,88 @@ pub enum ConfigError {
         "unsupported jolter.json schema version {found}; this Jolter release supports version {supported}"
     )]
     UnsupportedSchemaVersion { found: u32, supported: u32 },
+    #[error("jolter.json $schema `{found}` does not match schemaVersion; expected `{expected}`")]
+    SchemaUrlMismatch { found: String, expected: String },
     #[error("selector for `{0}` cannot be empty")]
     EmptySelector(String),
+    #[error("invalid plugin name `{0}`")]
+    InvalidPluginName(String),
+    #[error("invalid plugin tool name `{0}`")]
+    InvalidPluginToolName(String),
+    #[error("invalid plugin selector `{selector}` for `{name}`")]
+    InvalidPluginSelector { name: String, selector: String },
+    #[error("invalid plugin tool selector `{selector}` for `{name}`")]
+    InvalidPluginToolSelector { name: String, selector: String },
     #[error(transparent)]
     Tool(#[from] jolter_runtime::ToolRequestError),
     #[error(transparent)]
     Runtime(#[from] jolter_runtime::RuntimeRequestError),
     #[error("invalid configuration path {path}")]
     InvalidPath { path: PathBuf },
+}
+
+fn validate_plugin_name(value: &str) -> Result<(), ConfigError> {
+    let valid_alias = !value.starts_with('@') && valid_component(value);
+    let valid_scoped = value.starts_with('@')
+        && value
+            .trim_start_matches('@')
+            .split_once('/')
+            .is_some_and(|(scope, name)| valid_component(scope) && valid_component(name));
+    if valid_alias || valid_scoped {
+        Ok(())
+    } else {
+        Err(ConfigError::InvalidPluginName(value.to_owned()))
+    }
+}
+
+fn validate_plugin_tool_name(value: &str) -> Result<(), ConfigError> {
+    if valid_component(value) {
+        Ok(())
+    } else {
+        Err(ConfigError::InvalidPluginToolName(value.to_owned()))
+    }
+}
+
+fn valid_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 100
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_' | '-')
+        })
+        && value
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        && value
+            .chars()
+            .last()
+            .is_some_and(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+}
+
+fn validate_numeric_selector(selector: &str) -> Result<(), ()> {
+    if selector.eq_ignore_ascii_case("latest") {
+        return Ok(());
+    }
+    let components = selector.split('.').collect::<Vec<_>>();
+    if components.is_empty() || components.len() > 3 {
+        return Err(());
+    }
+    let mut wildcard_seen = false;
+    for component in components {
+        if component.eq_ignore_ascii_case("x") || component == "*" {
+            wildcard_seen = true;
+        } else if wildcard_seen
+            || component.is_empty()
+            || !component
+                .chars()
+                .all(|character| character.is_ascii_digit())
+        {
+            return Err(());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -231,6 +365,7 @@ mod tests {
     #[test]
     fn rejects_multiple_runtimes() {
         let config = ProjectConfig {
+            schema_url: Some(schema_url_for_version(CURRENT_SCHEMA_VERSION).to_owned()),
             schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig {
                 node: Some("24".to_owned()),
@@ -238,6 +373,7 @@ mod tests {
                 deno: None,
             },
             tools: BTreeMap::new(),
+            plugins: BTreeMap::new(),
         };
 
         assert!(matches!(
@@ -249,19 +385,23 @@ mod tests {
     #[test]
     fn accepts_multiple_tools_and_rejects_unknown_tools() {
         let config = ProjectConfig {
+            schema_url: Some(schema_url_for_version(CURRENT_SCHEMA_VERSION).to_owned()),
             schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
             tools: BTreeMap::from([
                 ("pnpm".to_owned(), "10".to_owned()),
                 ("yarn".to_owned(), "4".to_owned()),
             ]),
+            plugins: BTreeMap::new(),
         };
         config.validate().unwrap();
 
         let config = ProjectConfig {
+            schema_url: Some(schema_url_for_version(CURRENT_SCHEMA_VERSION).to_owned()),
             schema_version: CURRENT_SCHEMA_VERSION,
             runtime: RuntimeConfig::default(),
             tools: BTreeMap::from([("rush".to_owned(), "5".to_owned())]),
+            plugins: BTreeMap::new(),
         };
         assert!(matches!(config.validate(), Err(ConfigError::Tool(_))));
     }
@@ -279,25 +419,84 @@ mod tests {
     }
 
     #[test]
-    fn defaults_legacy_configuration_to_schema_version_one() {
+    fn defaults_configuration_to_current_schema_version() {
         let config: ProjectConfig = serde_json::from_str(r#"{"runtime":{"node":"24"}}"#).unwrap();
 
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(config.schema_url, None);
         config.validate().unwrap();
     }
 
     #[test]
     fn rejects_unknown_schema_versions() {
         let config: ProjectConfig =
-            serde_json::from_str(r#"{"schemaVersion":2,"runtime":{"node":"24"}}"#).unwrap();
+            serde_json::from_str(r#"{"schemaVersion":3,"runtime":{"node":"24"}}"#).unwrap();
 
         assert!(matches!(
             config.validate(),
             Err(ConfigError::UnsupportedSchemaVersion {
-                found: 2,
-                supported: 1
+                found: 3,
+                supported: 2
             })
         ));
+    }
+
+    #[test]
+    fn accepts_matching_schema_url_and_rejects_mismatch() {
+        let config: ProjectConfig = serde_json::from_str(
+            r#"{
+                "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
+                "schemaVersion": 2,
+                "runtime": { "node": "24" }
+            }"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+
+        let config: ProjectConfig = serde_json::from_str(
+            r#"{
+                "$schema": "https://schemas.jolter.dev/project/v1/schema.json",
+                "schemaVersion": 2,
+                "runtime": { "node": "24" }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::SchemaUrlMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn writes_current_schema_url() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(CONFIG_FILE_NAME);
+        ProjectConfig::default().write_to(&path).unwrap();
+
+        let contents = fs::read_to_string(path).unwrap();
+        assert!(
+            contents.contains(r#""$schema": "https://schemas.jolter.dev/project/v2/schema.json""#)
+        );
+    }
+
+    #[test]
+    fn accepts_schema_two_plugin_requirements() {
+        let config: ProjectConfig = serde_json::from_str(
+            r#"{
+                "schemaVersion": 2,
+                "runtime": { "node": "24.x" },
+                "tools": { "eslint": "8.x" },
+                "plugins": { "eslint": "1.x" }
+            }"#,
+        )
+        .unwrap();
+
+        config.validate().unwrap();
+        assert_eq!(
+            config.plugins.get("eslint").map(String::as_str),
+            Some("1.x")
+        );
     }
 
     #[test]

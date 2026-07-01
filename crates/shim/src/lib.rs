@@ -15,6 +15,7 @@ pub const SHIM_COMMANDS: [&str; 7] = ["node", "npm", "npx", "pnpm", "yarn", "bun
 pub enum ShimTarget {
     Runtime(RuntimeKind),
     NodeTool(&'static str),
+    PluginCommand,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,10 +46,14 @@ pub fn resolve_command(
     storage: &Storage,
 ) -> Result<ResolvedCommand, ShimError> {
     let target = target_for_command(command)
+        .or_else(|| plugin_command_exists(storage, command).then_some(ShimTarget::PluginCommand))
         .ok_or_else(|| ShimError::UnsupportedCommand(command.to_owned()))?;
     let kind = match target {
         ShimTarget::Runtime(kind) => kind,
         ShimTarget::NodeTool(_) => RuntimeKind::Node,
+        ShimTarget::PluginCommand => {
+            return Err(ShimError::PluginToolNotInstalled(command.to_owned()));
+        }
     };
     let project_resolution = resolve(project)?;
     let project_request = project_resolution
@@ -103,6 +108,9 @@ pub fn resolve_command(
                     Vec::new(),
                 )
             }
+        }
+        ShimTarget::PluginCommand => {
+            return Err(ShimError::PluginToolNotInstalled(command.to_owned()));
         }
     };
     if !executable.is_file() {
@@ -159,8 +167,17 @@ pub fn install_shims(
         ));
     }
     storage.ensure_layout()?;
-    let mut installed = Vec::with_capacity(SHIM_COMMANDS.len());
-    for command in SHIM_COMMANDS {
+    let plugin_commands = plugin_shim_commands(storage)?;
+    let mut commands = SHIM_COMMANDS
+        .iter()
+        .map(|command| (*command).to_owned())
+        .chain(plugin_commands)
+        .collect::<Vec<_>>();
+    commands.sort();
+    commands.dedup();
+    let mut installed = Vec::with_capacity(commands.len());
+    for command in commands {
+        let command = command.as_str();
         let file_name = shim_file_name(command);
         let destination = storage.shims_dir().join(&file_name);
         let temporary = storage
@@ -191,6 +208,53 @@ pub fn install_shims(
         installed.push(destination);
     }
     Ok(installed)
+}
+
+fn plugin_shim_commands(storage: &Storage) -> Result<Vec<String>, ShimError> {
+    let mut commands = Vec::new();
+    for plugin in storage.installed_plugins()? {
+        let path = plugin.path.join(".jolter-plugin.json");
+        if !path.is_file() {
+            continue;
+        }
+        let contents =
+            fs::read_to_string(&path).map_err(|source| ShimError::ReadPluginManifest {
+                path: path.clone(),
+                source,
+            })?;
+        let manifest: PluginShimManifest =
+            serde_json::from_str(&contents).map_err(|source| ShimError::ParsePluginManifest {
+                path: path.clone(),
+                source,
+            })?;
+        commands.extend(
+            manifest
+                .commands
+                .into_iter()
+                .filter(|command| valid_plugin_command(command)),
+        );
+    }
+    Ok(commands)
+}
+
+fn plugin_command_exists(storage: &Storage, command: &str) -> bool {
+    plugin_shim_commands(storage)
+        .is_ok_and(|commands| commands.iter().any(|candidate| candidate == command))
+}
+
+fn valid_plugin_command(command: &str) -> bool {
+    !command.is_empty()
+        && command.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_' | '-')
+        })
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PluginShimManifest {
+    #[serde(default)]
+    commands: Vec<String>,
 }
 
 fn active_runtime(storage: &Storage, kind: RuntimeKind) -> Result<InstalledRuntime, ShimError> {
@@ -227,6 +291,10 @@ fn shim_file_name(command: &str) -> String {
 pub enum ShimError {
     #[error("unsupported shim command `{0}`")]
     UnsupportedCommand(String),
+    #[error(
+        "plugin command `{0}` is known, but its tool artifact is not installed yet; run `jolter sync --yes`"
+    )]
+    PluginToolNotInstalled(String),
     #[error("runtime required by the project is not installed: {0}")]
     RuntimeNotInstalled(RuntimeRequest),
     #[error("tool required by the project is not installed: {0}")]
@@ -259,6 +327,18 @@ pub enum ShimError {
     Resolver(#[from] jolter_resolver::ResolverError),
     #[error(transparent)]
     Storage(#[from] jolter_storage::StorageError),
+    #[error("failed to read plugin manifest at {path}: {source}")]
+    ReadPluginManifest {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse plugin manifest at {path}: {source}")]
+    ParsePluginManifest {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 #[cfg(test)]
@@ -440,6 +520,24 @@ mod tests {
         assert!(matches!(
             resolve_command("pnpm", project.path(), &storage),
             Err(ShimError::ToolNotInstalled(_))
+        ));
+    }
+
+    #[test]
+    fn reports_known_plugin_command_without_runtime_resolution() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+        let manifest = storage
+            .plugin_version_dir("@local/hello", &Version::new(1, 0, 0))
+            .join(".jolter-plugin.json");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        fs::write(&manifest, r#"{"commands":["hello"]}"#).unwrap();
+
+        assert!(matches!(
+            resolve_command("hello", project.path(), &storage),
+            Err(ShimError::PluginToolNotInstalled(command)) if command == "hello"
         ));
     }
 

@@ -108,7 +108,7 @@ jolter sync
 ```
 
 A project using Bun or Deno as its sole runtime cannot synchronize Jolter
-managed tools in schema version 1.
+managed tools.
 
 ## Tool and Node.js Are Incompatible
 

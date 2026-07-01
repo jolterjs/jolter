@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/doctor",
     "crates/installer",
+    "crates/plugin",
     "crates/resolver",
     "crates/runtime",
     "crates/shim",

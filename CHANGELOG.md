@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
+- add schema-version-2 plugin declarations in `jolter.json`
+- add global plugin install, list, update, and uninstall commands
+- add registry-backed plugin release download and WASM integrity checks
+- add dynamic shim generation for commands declared by installed plugins
+- add `@jolter/jdk` with the `jdt` plugin packaging CLI at https://github.com/jolterjs/jdt
+
 ## 0.2.0 - 2026-06-13
 
 - add the `[jolter]` terminal output style with live download bytes, percentage,

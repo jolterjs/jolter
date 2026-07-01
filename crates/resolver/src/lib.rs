@@ -15,6 +15,8 @@ pub struct ProjectResolution {
     pub root: PathBuf,
     pub runtime: Option<ResolvedRuntime>,
     pub tools: Vec<ResolvedTool>,
+    pub plugin_tools: Vec<ResolvedPluginTool>,
+    pub plugins: Vec<ResolvedPlugin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +28,20 @@ pub struct ResolvedRuntime {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedTool {
     pub request: ToolRequest,
+    pub source: RequirementSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPluginTool {
+    pub name: String,
+    pub selector: String,
+    pub source: RequirementSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPlugin {
+    pub name: String,
+    pub selector: String,
     pub source: RequirementSource,
 }
 
@@ -67,11 +83,17 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
         Some(tools) if !tools.is_empty() => tools,
         _ => resolve_package_json(&start)?.into_iter().collect(),
     };
+    let plugin_tools = config
+        .as_ref()
+        .map_or_else(Vec::new, plugin_tools_from_config);
+    let plugins = config.as_ref().map_or_else(Vec::new, plugins_from_config);
 
     Ok(ProjectResolution {
         root: project_root,
         runtime,
         tools,
+        plugin_tools,
+        plugins,
     })
 }
 
@@ -90,11 +112,43 @@ fn tools_from_config(config: &ProjectConfig) -> Result<Vec<ResolvedTool>, ToolRe
     config
         .tools
         .iter()
+        .filter(|(name, _)| name.parse::<jolter_runtime::ToolKind>().is_ok())
         .map(|(name, selector)| {
             ToolRequest::new(name.parse()?, selector).map(|request| ResolvedTool {
                 request,
                 source: RequirementSource::JolterConfig,
             })
+        })
+        .collect()
+}
+
+fn plugin_tools_from_config(config: &ProjectConfig) -> Vec<ResolvedPluginTool> {
+    if config.schema_version < 2 {
+        return Vec::new();
+    }
+    config
+        .tools
+        .iter()
+        .filter(|(name, _)| name.parse::<jolter_runtime::ToolKind>().is_err())
+        .map(|(name, selector)| ResolvedPluginTool {
+            name: name.clone(),
+            selector: selector.clone(),
+            source: RequirementSource::JolterConfig,
+        })
+        .collect()
+}
+
+fn plugins_from_config(config: &ProjectConfig) -> Vec<ResolvedPlugin> {
+    if config.schema_version < 2 {
+        return Vec::new();
+    }
+    config
+        .plugins
+        .iter()
+        .map(|(name, selector)| ResolvedPlugin {
+            name: name.clone(),
+            selector: selector.clone(),
+            source: RequirementSource::JolterConfig,
         })
         .collect()
 }

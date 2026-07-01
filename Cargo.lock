@@ -835,6 +835,7 @@ dependencies = [
  "clap_complete",
  "jolter-core",
  "jolter-doctor",
+ "jolter-plugin",
  "jolter-runtime",
  "jolter-shim",
  "jolter-storage",
@@ -862,6 +863,7 @@ dependencies = [
  "jolter-config",
  "jolter-doctor",
  "jolter-installer",
+ "jolter-plugin",
  "jolter-resolver",
  "jolter-runtime",
  "jolter-shim",
@@ -911,6 +913,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "jolter-plugin"
+version = "0.2.0"
+dependencies = [
+ "jolter-storage",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "jolter-resolver"
 version = "0.2.0"
 dependencies = [
@@ -937,6 +953,8 @@ dependencies = [
  "jolter-runtime",
  "jolter-storage",
  "semver",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

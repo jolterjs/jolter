@@ -83,9 +83,9 @@ jolter pin <runtime-or-tool>@<selector>
 ```
 
 Writes `jolter.json` in the current directory. Pinning a runtime replaces the
-project's previous runtime selection because schema version 1 allows one
-runtime. Pinning a tool adds or replaces only that tool and preserves the
-runtime and other tools.
+project's previous runtime selection because Jolter allows one runtime. Pinning
+a built-in tool adds or replaces only that tool and preserves the runtime and
+other tools.
 
 `pin` records a requirement; it does not install it. Run `jolter sync`
 afterward.
@@ -157,6 +157,7 @@ exit status. JSON output contains `healthy` and `checks`; each check has
 
 ```bash
 jolter sync
+jolter sync --yes
 ```
 
 Resolves the current project, installs or reuses its runtime and tools,
@@ -171,15 +172,36 @@ Each exact-version publication is atomic, but a project sync can make progress
 before a later tool fails. Rerunning `sync` safely reuses completed compatible
 installations.
 
+`--yes` permits Jolter to install missing plugins declared by schema-version-2
+projects. Without it, missing plugins fail with remediation text.
+
 ## `jolter repair`
 
 ```bash
 jolter repair
+jolter repair --yes
 ```
 
 Runs the project synchronization flow in repair mode. Use it when an expected
 version directory exists but its manifest, executable, entry point, or
 integrity state is incomplete. Complete reusable installations are retained.
+
+`--yes` has the same plugin-install behavior as `sync --yes`.
+
+## `jolter plugin`
+
+```bash
+jolter plugin install <name>[@selector]
+jolter plugin list
+jolter plugin list --json
+jolter plugin update <name>
+jolter plugin update --all
+jolter plugin uninstall <name> [--force]
+```
+
+Plugins are installed globally under `JOLTER_HOME/plugins`. Install accepts
+official aliases such as `eslint` and canonical scoped names such as
+`@eslint/eslint`.
 
 ## `jolter uninstall`
 
@@ -251,6 +273,7 @@ Cleaning the cache can remove offline readiness.
 ```bash
 jolter setup-ci
 jolter setup-ci --json
+jolter setup-ci --yes
 ```
 
 Synchronizes the project, refreshes shims, detects the CI provider, and reports

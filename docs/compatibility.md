@@ -27,6 +27,7 @@ Canonical schema:
 
 ```json
 {
+  "$schema": "https://schemas.jolter.dev/project/v1/schema.json",
   "schemaVersion": 1,
   "runtime": {
     "node": "24"
@@ -37,8 +38,9 @@ Canonical schema:
 }
 ```
 
-Files without `schemaVersion` are interpreted as version 1. Unknown versions
-fail closed. Unknown fields also fail validation.
+Files without `$schema` remain accepted. Files without `schemaVersion` are
+interpreted as the current schema. Unknown versions fail closed. Unknown fields
+also fail validation.
 
 Schema version 1 guarantees:
 

@@ -78,6 +78,44 @@ impl Storage {
     }
 
     #[must_use]
+    pub fn plugins_dir(&self) -> PathBuf {
+        self.root.join("plugins")
+    }
+
+    #[must_use]
+    pub fn plugin_tools_dir(&self) -> PathBuf {
+        self.root.join("plugin-tools")
+    }
+
+    #[must_use]
+    pub fn plugin_dir(&self, canonical_name: &str) -> PathBuf {
+        let (scope, name) = plugin_path_parts(canonical_name);
+        self.plugins_dir().join(scope).join(name)
+    }
+
+    #[must_use]
+    pub fn plugin_version_dir(&self, canonical_name: &str, version: &Version) -> PathBuf {
+        self.plugin_dir(canonical_name).join(version.to_string())
+    }
+
+    #[must_use]
+    pub fn plugin_tool_dir(&self, canonical_name: &str, tool: &str) -> PathBuf {
+        let (scope, name) = plugin_path_parts(canonical_name);
+        self.plugin_tools_dir().join(scope).join(name).join(tool)
+    }
+
+    #[must_use]
+    pub fn plugin_tool_version_dir(
+        &self,
+        canonical_name: &str,
+        tool: &str,
+        version: &Version,
+    ) -> PathBuf {
+        self.plugin_tool_dir(canonical_name, tool)
+            .join(version.to_string())
+    }
+
+    #[must_use]
     pub fn tool_dir(&self, kind: ToolKind) -> PathBuf {
         self.tools_dir().join(kind.to_string())
     }
@@ -112,6 +150,8 @@ impl Storage {
         for path in [
             self.runtimes_dir(),
             self.tools_dir(),
+            self.plugins_dir(),
+            self.plugin_tools_dir(),
             self.shims_dir(),
             self.cache_dir(),
             self.config_dir(),
@@ -130,6 +170,102 @@ impl Storage {
             fs::create_dir_all(&path).map_err(|source| StorageError::Create { path, source })?;
         }
         Ok(())
+    }
+
+    pub fn installed_plugins(&self) -> Result<Vec<InstalledPlugin>, StorageError> {
+        let mut installed = Vec::new();
+        let root = self.plugins_dir();
+        if !root.exists() {
+            return Ok(installed);
+        }
+        for scope in fs::read_dir(&root).map_err(|source| StorageError::Read {
+            path: root.clone(),
+            source,
+        })? {
+            let scope = scope.map_err(|source| StorageError::Read {
+                path: root.clone(),
+                source,
+            })?;
+            if !scope
+                .file_type()
+                .map_err(|source| StorageError::Read {
+                    path: scope.path(),
+                    source,
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+            let scope_name = scope.file_name().to_string_lossy().into_owned();
+            for plugin in fs::read_dir(scope.path()).map_err(|source| StorageError::Read {
+                path: scope.path(),
+                source,
+            })? {
+                let plugin = plugin.map_err(|source| StorageError::Read {
+                    path: scope.path(),
+                    source,
+                })?;
+                if !plugin
+                    .file_type()
+                    .map_err(|source| StorageError::Read {
+                        path: plugin.path(),
+                        source,
+                    })?
+                    .is_dir()
+                {
+                    continue;
+                }
+                let plugin_name = plugin.file_name().to_string_lossy().into_owned();
+                let canonical_name = format!("@{scope_name}/{plugin_name}");
+                for version_entry in
+                    fs::read_dir(plugin.path()).map_err(|source| StorageError::Read {
+                        path: plugin.path(),
+                        source,
+                    })?
+                {
+                    let version_entry = version_entry.map_err(|source| StorageError::Read {
+                        path: plugin.path(),
+                        source,
+                    })?;
+                    if !version_entry
+                        .file_type()
+                        .map_err(|source| StorageError::Read {
+                            path: version_entry.path(),
+                            source,
+                        })?
+                        .is_dir()
+                    {
+                        continue;
+                    }
+                    let version_name = version_entry.file_name().to_string_lossy().into_owned();
+                    if let Ok(version) = Version::parse(version_name.trim_start_matches('v')) {
+                        installed.push(InstalledPlugin {
+                            canonical_name: canonical_name.clone(),
+                            version,
+                            path: version_entry.path(),
+                        });
+                    }
+                }
+            }
+        }
+        installed.sort_by(|left, right| {
+            left.canonical_name
+                .cmp(&right.canonical_name)
+                .then_with(|| left.version.cmp(&right.version))
+        });
+        Ok(installed)
+    }
+
+    pub fn find_matching_plugin(
+        &self,
+        canonical_name: &str,
+        selector: &str,
+    ) -> Result<Option<InstalledPlugin>, StorageError> {
+        Ok(self.installed_plugins()?.into_iter().rev().find(|plugin| {
+            plugin.canonical_name.eq_ignore_ascii_case(canonical_name)
+                && selector_matches_version(selector, &plugin.version)
+                && plugin.path.join(".jolter-plugin.json").is_file()
+        }))
     }
 
     pub fn installed_runtimes(&self) -> Result<Vec<InstalledRuntime>, StorageError> {
@@ -386,6 +522,13 @@ pub struct InstalledTool {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPlugin {
+    pub canonical_name: String,
+    pub version: Version,
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
     pub files: u64,
@@ -521,6 +664,42 @@ fn home_directory() -> Option<PathBuf> {
         env::var_os("HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
+    }
+}
+
+fn plugin_path_parts(canonical_name: &str) -> (String, String) {
+    let normalized = canonical_name
+        .trim()
+        .trim_start_matches('@')
+        .to_ascii_lowercase();
+    let (scope, name) = normalized
+        .split_once('/')
+        .unwrap_or(("unknown", normalized.as_str()));
+    (scope.to_owned(), name.to_owned())
+}
+
+fn selector_matches_version(selector: &str, version: &Version) -> bool {
+    if selector.eq_ignore_ascii_case("latest")
+        || selector == "*"
+        || selector.eq_ignore_ascii_case("x")
+    {
+        return true;
+    }
+    let Ok(parts) = selector
+        .split('.')
+        .filter(|part| !part.eq_ignore_ascii_case("x") && *part != "*")
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+    match parts.as_slice() {
+        [major] => version.major == *major,
+        [major, minor] => version.major == *major && version.minor == *minor,
+        [major, minor, patch] => {
+            version.major == *major && version.minor == *minor && version.patch == *patch
+        }
+        _ => false,
     }
 }
 

@@ -11,6 +11,8 @@ jolter-resolver = { path = "../resolver" }
 jolter-runtime = { path = "../runtime" }
 jolter-storage = { path = "../storage" }
 semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

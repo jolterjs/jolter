@@ -17,6 +17,8 @@ automation, maintenance, security review, and release engineering.
 
 - [Runtimes and tools](runtimes-and-tools.md): supported providers, version
   selection, activation, and Node.js compatibility.
+- [Plugins](plugins.md): registry plugins, project requirements, and plugin
+  development.
 - [Project resolution](project-resolution.md): requirement precedence,
   directory discovery, global fallback, and automatic switching.
 - [Shell setup](setup.md): shims, `PATH`, shell persistence, and completions.

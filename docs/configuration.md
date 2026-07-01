@@ -1,20 +1,26 @@
 # Configuration
 
-Jolter projects use `jolter.json`. Schema version 1 supports one runtime and
-multiple Node.js-based tools.
+Jolter projects use `jolter.json`. Schema version 2 supports one runtime,
+multiple Node.js-based tools, and optional plugin requirements. Schema version
+1 remains accepted for compatibility.
 
 ## Complete Schema
 
 ```json
 {
-  "schemaVersion": 1,
+  "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
+  "schemaVersion": 2,
   "runtime": {
     "node": "24.x"
   },
   "tools": {
     "npm": "11.x",
     "pnpm": "10.x",
-    "yarn": "4.x"
+    "yarn": "4.x",
+    "eslint": "8.x"
+  },
+  "plugins": {
+    "eslint": "1.x"
   }
 }
 ```
@@ -27,15 +33,18 @@ All fields are optional, but commands such as `sync`, `repair`, and
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schemaVersion` | integer | Configuration schema. The current and only supported value is `1`. |
+| `$schema` | string | Optional JSON Schema URL. Jolter writes `https://schemas.jolter.dev/project/v2/schema.json` for current files. |
+| `schemaVersion` | integer | Configuration schema. The current value is `2`; version `1` remains accepted. |
 | `runtime` | object | Zero or one of `node`, `bun`, or `deno`. |
-| `tools` | object | Zero or more of `npm`, `pnpm`, and `yarn`. |
+| `tools` | object | Zero or more built-in or plugin-provided tools. |
+| `plugins` | object | Plugin version requirements for schema version 2 projects. |
 
 Unknown fields fail validation. Unknown schema versions fail closed rather than
 being guessed.
 
-Files without `schemaVersion` are interpreted as schema version 1 for backward
-compatibility.
+Files without `$schema` remain accepted. Files without `schemaVersion` are
+interpreted as the current schema when rewritten by Jolter. Explicit schema
+version 1 files remain accepted for backward compatibility.
 
 ## Runtime Rules
 
@@ -82,10 +91,13 @@ Multiple tools can be declared:
 }
 ```
 
-Tools managed by Jolter execute through Node.js. A project with any `tools`
-entry must therefore resolve Node.js as its runtime. A Bun or Deno project can
-still use that runtime's bundled capabilities, but cannot synchronize Jolter's
-managed npm, pnpm, or Yarn entries.
+Built-in tools managed by Jolter execute through Node.js. Plugin-provided tools
+are declared in `tools` and require a corresponding `plugins` entry in schema
+version 2.
+
+Plugin versions and tool versions are separate. For example, `eslint: 8.x`
+selects ESLint, while `plugins.eslint: 1.x` selects the Jolter plugin that
+supports ESLint.
 
 ## Selectors
 
@@ -106,8 +118,8 @@ Leading `v` is accepted in direct requests and normalized. Whitespace,
 embedded `@`, ranges such as `>=20`, unions, prerelease syntax, and more than
 three numeric components are not supported in schema version 1.
 
-`lts` is rejected for Bun and Deno. Managed tools support numeric selectors,
-wildcards, and `latest`, but not `lts`.
+`lts` is rejected for Bun and Deno. Built-in and plugin tools support numeric
+selectors, wildcards, and `latest`, but not `lts`.
 
 ## Corepack-Style Tool Hashes
 

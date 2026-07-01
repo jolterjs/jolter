@@ -23,6 +23,7 @@ and command shims in one workspace.
 | `config` | Strict project schema, upward discovery, validation, and atomic writes. |
 | `runtime` | Runtime/tool identifiers, request parsing, selectors, and hashes. |
 | `installer` | Provider metadata, HTTP, retry, cache, integrity, extraction, locking, and publication. |
+| `plugin` | Registry resolution, plugin release manifests, WASM artifact verification, and plugin inventory. |
 | `resolver` | Project-source precedence and normalized requirements. |
 | `shim` | Shim generation and command-to-installation selection. |
 | `doctor` | Storage, project, installation, command-routing, network, and cache checks. |
@@ -209,9 +210,19 @@ fields. The resolver separately supports the standard string-valued
 See [compatibility](compatibility.md) before changing serialized fields,
 storage paths, JSON output, or provider selection.
 
+## Plugins
+
+Schema version 2 adds project plugin requirements. Jolter installs plugins
+globally from the registry, verifies release manifest identity plus WASM size
+and SHA-256, and stores them under `plugins/<scope>/<name>/<version>`.
+
+Installed plugin manifests declare tool commands that can receive shims. Shim
+dispatch recognizes those commands, but does not perform network installation
+at invocation time. Project synchronization is responsible for installing or
+verifying plugin requirements.
+
 ## Extension Points
 
-New runtime or tool providers require coordinated changes across domain types,
-installer providers, storage paths, shim commands, doctor checks, CLI parsing,
-tests, and docs. A plugin system is roadmap work and is not part of the current
-runtime extension model.
+Built-in runtime or tool providers still require coordinated changes across
+domain types, installer providers, storage paths, shim commands, doctor checks,
+CLI parsing, tests, and docs. Third-party tool support should use plugins.

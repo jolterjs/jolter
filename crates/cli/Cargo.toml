@@ -15,6 +15,7 @@ clap.workspace = true
 clap_complete.workspace = true
 jolter-core = { path = "../core" }
 jolter-doctor = { path = "../doctor" }
+jolter-plugin = { path = "../plugin" }
 jolter-runtime = { path = "../runtime" }
 jolter-shim = { path = "../shim" }
 jolter-storage = { path = "../storage" }

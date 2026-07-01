@@ -114,7 +114,8 @@ declared Node.js compatibility before activation.
 
 ```json
 {
-  "schemaVersion": 1,
+  "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
+  "schemaVersion": 2,
   "runtime": {
     "node": "24.x"
   },
