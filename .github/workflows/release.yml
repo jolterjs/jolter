@@ -100,9 +100,8 @@ jobs:
           fi
 
       - uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.JOLTERBOT_TOKEN }}
         with:
+          token: ${{ secrets.JOLTERBOT_TOKEN }}
           generate_release_notes: true
           prerelease: ${{ steps.release_type.outputs.prerelease }}
           make_latest: ${{ steps.release_type.outputs.make_latest }}
