@@ -83,7 +83,7 @@ enum Command {
         all: bool,
     },
     /// List locally installed runtimes and tools.
-    #[command(visible_aliases = ["list", "ls"])]
+    #[command(visible_alias = "ls")]
     List {
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -172,7 +172,7 @@ enum PluginCommand {
         target: PluginRequest,
     },
     /// List installed plugins.
-    #[command(visible_aliases = ["list", "ls"])]
+    #[command(visible_alias = "ls")]
     List {
         /// Emit machine-readable JSON.
         #[arg(long)]

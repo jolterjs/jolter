@@ -542,8 +542,7 @@ impl Jolter {
             .filter(|plugin| plugin.canonical_name == canonical)
             .any(|plugin| {
                 read_installed_manifest(&plugin.path)
-                    .map(|manifest| !manifest.commands.is_empty())
-                    .unwrap_or(false)
+                    .is_ok_and(|manifest| !manifest.commands.is_empty())
             }))
     }
 

@@ -276,9 +276,10 @@ pub struct PluginManager<H = ReqwestRegistryHttp> {
 
 impl PluginManager<ReqwestRegistryHttp> {
     pub fn new(storage: Storage) -> Result<Self, PluginError> {
+        let registry_url = registry_url_from_env();
         Ok(Self::with_registry(
             storage,
-            registry_url_from_env(),
+            &registry_url,
             ReqwestRegistryHttp::new()?,
         ))
     }
@@ -286,7 +287,7 @@ impl PluginManager<ReqwestRegistryHttp> {
 
 impl<H: RegistryHttp> PluginManager<H> {
     #[must_use]
-    pub fn with_registry(storage: Storage, registry_url: String, http: H) -> Self {
+    pub fn with_registry(storage: Storage, registry_url: &str, http: H) -> Self {
         Self {
             storage,
             registry_url: registry_url.trim_end_matches('/').to_owned(),
@@ -453,6 +454,7 @@ pub fn read_installed_manifest(path: &Path) -> Result<InstalledPluginManifest, P
     serde_json::from_str(&contents).map_err(PluginError::Json)
 }
 
+#[must_use]
 pub fn commands_from_provides(provides: &PluginProvides) -> Vec<String> {
     let mut commands = provides
         .tools

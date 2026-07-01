@@ -170,7 +170,6 @@ const fn default_schema_version() -> u32 {
 pub fn schema_url_for_version(version: u32) -> &'static str {
     match version {
         1 => "https://schemas.jolter.dev/project/v1/schema.json",
-        2 => "https://schemas.jolter.dev/project/v2/schema.json",
         _ => "https://schemas.jolter.dev/project/v2/schema.json",
     }
 }
