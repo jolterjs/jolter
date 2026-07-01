@@ -268,6 +268,105 @@ impl Storage {
         }))
     }
 
+    pub fn installed_plugin_tools(&self) -> Result<Vec<InstalledPluginTool>, StorageError> {
+        let mut installed = Vec::new();
+        let root = self.plugin_tools_dir();
+        if !root.exists() {
+            return Ok(installed);
+        }
+        for scope in fs::read_dir(&root).map_err(|source| StorageError::Read {
+            path: root.clone(),
+            source,
+        })? {
+            let scope = scope.map_err(|source| StorageError::Read {
+                path: root.clone(),
+                source,
+            })?;
+            if !scope
+                .file_type()
+                .map_err(|source| StorageError::Read {
+                    path: scope.path(),
+                    source,
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+            let scope_name = scope.file_name().to_string_lossy().into_owned();
+            for plugin in fs::read_dir(scope.path()).map_err(|source| StorageError::Read {
+                path: scope.path(),
+                source,
+            })? {
+                let plugin = plugin.map_err(|source| StorageError::Read {
+                    path: scope.path(),
+                    source,
+                })?;
+                if !plugin
+                    .file_type()
+                    .map_err(|source| StorageError::Read {
+                        path: plugin.path(),
+                        source,
+                    })?
+                    .is_dir()
+                {
+                    continue;
+                }
+                let plugin_name = plugin.file_name().to_string_lossy().into_owned();
+                let provider = format!("@{scope_name}/{plugin_name}");
+                for tool in fs::read_dir(plugin.path()).map_err(|source| StorageError::Read {
+                    path: plugin.path(),
+                    source,
+                })? {
+                    let tool = tool.map_err(|source| StorageError::Read {
+                        path: plugin.path(),
+                        source,
+                    })?;
+                    if !tool
+                        .file_type()
+                        .map_err(|source| StorageError::Read {
+                            path: tool.path(),
+                            source,
+                        })?
+                        .is_dir()
+                    {
+                        continue;
+                    }
+                    let tool_name = tool.file_name().to_string_lossy().into_owned();
+                    installed.extend(read_installed_plugin_tool_versions(
+                        &provider,
+                        &tool_name,
+                        &tool.path(),
+                    )?);
+                }
+            }
+        }
+        installed.sort_by(|left, right| {
+            left.provider
+                .cmp(&right.provider)
+                .then_with(|| left.tool.cmp(&right.tool))
+                .then_with(|| left.version.cmp(&right.version))
+        });
+        Ok(installed)
+    }
+
+    pub fn find_matching_plugin_tool(
+        &self,
+        provider: &str,
+        tool: &str,
+        selector: &str,
+    ) -> Result<Option<InstalledPluginTool>, StorageError> {
+        Ok(self
+            .installed_plugin_tools()?
+            .into_iter()
+            .rev()
+            .find(|installed| {
+                installed.provider.eq_ignore_ascii_case(provider)
+                    && installed.tool == tool
+                    && selector_matches_version(selector, &installed.version)
+                    && installed.is_complete()
+            }))
+    }
+
     pub fn installed_runtimes(&self) -> Result<Vec<InstalledRuntime>, StorageError> {
         let mut installed = Vec::new();
         for kind in RuntimeKind::ALL {
@@ -438,6 +537,83 @@ impl Storage {
         self.remove_active_version(&kind.to_string(), expected)
     }
 
+    pub fn activate_plugin_tool(
+        &self,
+        provider: &str,
+        tool: &str,
+        version: &Version,
+    ) -> Result<(), StorageError> {
+        let path = self.config_dir().join("active-plugin-tools.json");
+        let mut active = self.read_active_plugin_tools()?;
+        active.tools.insert(
+            tool.to_owned(),
+            ActivePluginTool {
+                provider: provider.to_owned(),
+                version: version.to_string(),
+            },
+        );
+        let contents = serde_json::to_vec_pretty(&active).map_err(StorageError::SerializeActive)?;
+        atomic_write(&path, &contents)
+    }
+
+    pub fn active_plugin_tool(
+        &self,
+        tool: &str,
+    ) -> Result<Option<InstalledPluginTool>, StorageError> {
+        let active = self.read_active_plugin_tools()?;
+        let Some(entry) = active.tools.get(tool) else {
+            return Ok(None);
+        };
+        let version = Version::parse(&entry.version).map_err(|source| {
+            StorageError::InvalidActivePluginToolVersion {
+                tool: tool.to_owned(),
+                value: entry.version.clone(),
+                source,
+            }
+        })?;
+        let path = self.plugin_tool_version_dir(&entry.provider, tool, &version);
+        let commands = read_plugin_tool_commands(&path).unwrap_or_default();
+        Ok(Some(InstalledPluginTool {
+            provider: entry.provider.clone(),
+            tool: tool.to_owned(),
+            version,
+            path,
+            commands,
+        }))
+    }
+
+    pub fn active_plugin_tools(&self) -> Result<Vec<InstalledPluginTool>, StorageError> {
+        let active = self.read_active_plugin_tools()?;
+        active
+            .tools
+            .keys()
+            .map(|tool| self.active_plugin_tool(tool))
+            .filter_map(Result::transpose)
+            .collect()
+    }
+
+    pub fn deactivate_plugin_tool(
+        &self,
+        tool: &str,
+        expected: Option<&Version>,
+    ) -> Result<bool, StorageError> {
+        let path = self.config_dir().join("active-plugin-tools.json");
+        if !path.is_file() {
+            return Ok(false);
+        }
+        let mut active = self.read_active_plugin_tools()?;
+        let should_remove = active.tools.get(tool).is_some_and(|value| {
+            expected.is_none_or(|version| value.version == version.to_string())
+        });
+        if !should_remove {
+            return Ok(false);
+        }
+        active.tools.remove(tool);
+        let contents = serde_json::to_vec_pretty(&active).map_err(StorageError::SerializeActive)?;
+        atomic_write(&path, &contents)?;
+        Ok(true)
+    }
+
     fn write_active_version(&self, key: String, version: &Version) -> Result<(), StorageError> {
         let path = self.config_dir().join("active.json");
         let mut active = self.read_active_versions()?;
@@ -494,6 +670,18 @@ impl Storage {
         })?;
         serde_json::from_str(&contents).map_err(|source| StorageError::ParseActive { path, source })
     }
+
+    fn read_active_plugin_tools(&self) -> Result<ActivePluginTools, StorageError> {
+        let path = self.config_dir().join("active-plugin-tools.json");
+        if !path.is_file() {
+            return Ok(ActivePluginTools::default());
+        }
+        let contents = fs::read_to_string(&path).map_err(|source| StorageError::ReadFile {
+            path: path.clone(),
+            source,
+        })?;
+        serde_json::from_str(&contents).map_err(|source| StorageError::ParseActive { path, source })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -529,6 +717,15 @@ pub struct InstalledPlugin {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPluginTool {
+    pub provider: String,
+    pub tool: String,
+    pub version: Version,
+    pub path: PathBuf,
+    pub commands: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
     pub files: u64,
@@ -550,10 +747,104 @@ impl InstalledTool {
     }
 }
 
+impl InstalledPluginTool {
+    #[must_use]
+    pub fn executable_for_command(&self, command: &str) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let exe = self.path.join(format!("{command}.exe"));
+            if exe.is_file() {
+                return exe;
+            }
+        }
+        self.path.join(command)
+    }
+
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.commands
+            .iter()
+            .any(|command| self.executable_for_command(command).is_file())
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ActiveVersions {
     #[serde(flatten)]
     versions: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ActivePluginTools {
+    #[serde(default)]
+    tools: BTreeMap<String, ActivePluginTool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ActivePluginTool {
+    provider: String,
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginToolInstallManifest {
+    #[serde(default)]
+    commands: Vec<String>,
+}
+
+fn read_installed_plugin_tool_versions(
+    provider: &str,
+    tool: &str,
+    root: &Path,
+) -> Result<Vec<InstalledPluginTool>, StorageError> {
+    let mut installed = Vec::new();
+    for entry in fs::read_dir(root).map_err(|source| StorageError::Read {
+        path: root.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| StorageError::Read {
+            path: root.to_path_buf(),
+            source,
+        })?;
+        if !entry
+            .file_type()
+            .map_err(|source| StorageError::Read {
+                path: entry.path(),
+                source,
+            })?
+            .is_dir()
+        {
+            continue;
+        }
+        let version_name = entry.file_name().to_string_lossy().into_owned();
+        let Ok(version) = Version::parse(version_name.trim_start_matches('v')) else {
+            continue;
+        };
+        let path = entry.path();
+        let commands = read_plugin_tool_commands(&path).unwrap_or_default();
+        installed.push(InstalledPluginTool {
+            provider: provider.to_owned(),
+            tool: tool.to_owned(),
+            version,
+            path,
+            commands,
+        });
+    }
+    Ok(installed)
+}
+
+fn read_plugin_tool_commands(path: &Path) -> Result<Vec<String>, StorageError> {
+    let manifest_path = path.join(".jolter-plugin-tool.json");
+    let contents = fs::read_to_string(&manifest_path).map_err(|source| StorageError::ReadFile {
+        path: manifest_path.clone(),
+        source,
+    })?;
+    let manifest: PluginToolInstallManifest =
+        serde_json::from_str(&contents).map_err(|source| StorageError::ParseActive {
+            path: manifest_path,
+            source,
+        })?;
+    Ok(manifest.commands)
 }
 
 #[must_use]
@@ -749,6 +1040,13 @@ pub enum StorageError {
     #[error("active {kind} tool version `{value}` is invalid: {source}")]
     InvalidActiveToolVersion {
         kind: ToolKind,
+        value: String,
+        #[source]
+        source: semver::Error,
+    },
+    #[error("active plugin tool {tool} version `{value}` is invalid: {source}")]
+    InvalidActivePluginToolVersion {
+        tool: String,
         value: String,
         #[source]
         source: semver::Error,

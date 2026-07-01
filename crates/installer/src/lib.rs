@@ -210,6 +210,25 @@ pub struct ToolInstallOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginToolArchive {
+    pub provider: String,
+    pub tool: String,
+    pub version: Version,
+    pub artifact: Artifact,
+    pub commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginToolInstallOutcome {
+    pub provider: String,
+    pub tool: String,
+    pub version: Version,
+    pub path: PathBuf,
+    pub commands: Vec<String>,
+    pub downloaded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemovalOutcome {
     pub path: PathBuf,
     pub reclaimed_bytes: u64,
@@ -622,6 +641,99 @@ impl Installer {
         self.install_tool_inner(request, node_version, true)
     }
 
+    pub fn install_plugin_tool(
+        &self,
+        release: &PluginToolArchive,
+        repair: bool,
+    ) -> Result<PluginToolInstallOutcome, InstallerError> {
+        self.storage.ensure_layout()?;
+        let maintenance = self.maintenance_lock()?;
+        FileExt::lock_shared(&maintenance).map_err(InstallerError::Io)?;
+        let target = format!(
+            "{}@{} via {}",
+            release.tool, release.version, release.provider
+        );
+        self.report_stage(ProgressAction::Resolve, &target);
+        let destination = self.storage.plugin_tool_version_dir(
+            &release.provider,
+            &release.tool,
+            &release.version,
+        );
+        let lock =
+            self.plugin_tool_install_lock(&release.provider, &release.tool, &release.version)?;
+        FileExt::lock(&lock).map_err(InstallerError::Io)?;
+
+        if plugin_tool_commands_exist(&destination, &release.commands) {
+            self.report_stage(ProgressAction::Reuse, &target);
+            return Ok(PluginToolInstallOutcome {
+                provider: release.provider.clone(),
+                tool: release.tool.clone(),
+                version: release.version.clone(),
+                path: destination,
+                commands: release.commands.clone(),
+                downloaded: false,
+            });
+        }
+        if destination.exists() {
+            if !repair {
+                return Err(InstallerError::CorruptPluginToolInstallation { path: destination });
+            }
+            let expected_parent = self
+                .storage
+                .plugin_tool_dir(&release.provider, &release.tool);
+            if destination.parent() != Some(expected_parent.as_path()) {
+                return Err(InstallerError::UnsafeRemoval { path: destination });
+            }
+            fs::remove_dir_all(&destination).map_err(|source| InstallerError::RemoveCorrupt {
+                path: destination.clone(),
+                source,
+            })?;
+        }
+
+        release.artifact.validate()?;
+        let archive = self.obtain_archive(&release.artifact)?;
+        let tool_parent = self
+            .storage
+            .plugin_tool_dir(&release.provider, &release.tool);
+        fs::create_dir_all(&tool_parent).map_err(InstallerError::Io)?;
+        let stage = tempfile::Builder::new()
+            .prefix(".jolter-plugin-tool-install-")
+            .tempdir_in(&tool_parent)
+            .map_err(InstallerError::Io)?;
+        let payload = stage.path().join("payload");
+        fs::create_dir(&payload).map_err(InstallerError::Io)?;
+        self.report_stage(ProgressAction::Extract, &target);
+        extract_archive(
+            &archive,
+            &payload,
+            release.artifact.format,
+            release.artifact.strip_components,
+        )?;
+
+        for command in &release.commands {
+            let executable = plugin_tool_executable(&payload, command);
+            if !executable.is_file() {
+                return Err(InstallerError::ExecutableMissing { path: executable });
+            }
+            make_executable(&executable)?;
+        }
+        write_plugin_tool_manifest(&payload, release)?;
+        self.report_stage(ProgressAction::Publish, &target);
+        fs::rename(&payload, &destination).map_err(|source| InstallerError::Publish {
+            path: destination.clone(),
+            source,
+        })?;
+
+        Ok(PluginToolInstallOutcome {
+            provider: release.provider.clone(),
+            tool: release.tool.clone(),
+            version: release.version.clone(),
+            path: destination,
+            commands: release.commands.clone(),
+            downloaded: true,
+        })
+    }
+
     pub fn validate_installed_tool(
         &self,
         tool: &InstalledTool,
@@ -686,6 +798,28 @@ impl Installer {
             &self.storage,
             path,
             &self.storage.tool_dir(kind),
+            InstallationType::Tool,
+        )
+    }
+
+    pub fn uninstall_plugin_tool(
+        &self,
+        provider: &str,
+        tool: &str,
+        version: &Version,
+    ) -> Result<RemovalOutcome, InstallerError> {
+        self.storage.ensure_layout()?;
+        let maintenance = self.maintenance_lock()?;
+        FileExt::lock_shared(&maintenance).map_err(InstallerError::Io)?;
+        let install = self.plugin_tool_install_lock(provider, tool, version)?;
+        FileExt::lock(&install).map_err(InstallerError::Io)?;
+        let path = self
+            .storage
+            .plugin_tool_version_dir(provider, tool, version);
+        remove_installation(
+            &self.storage,
+            path,
+            &self.storage.plugin_tool_dir(provider, tool),
             InstallationType::Tool,
         )
     }
@@ -1033,6 +1167,30 @@ impl Installer {
             .read(true)
             .write(true)
             .open(directory.join(format!("tool-{kind}-{version}.lock")))
+            .map_err(InstallerError::Io)
+    }
+
+    fn plugin_tool_install_lock(
+        &self,
+        provider: &str,
+        tool: &str,
+        version: &Version,
+    ) -> Result<File, InstallerError> {
+        let safe_provider = provider.replace(['@', '/'], "_");
+        let path = self
+            .storage
+            .cache_dir()
+            .join("locks")
+            .join(format!("plugin-tool-{safe_provider}-{tool}-{version}.lock"));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(InstallerError::Io)?;
+        }
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
             .map_err(InstallerError::Io)
     }
 
@@ -1897,6 +2055,24 @@ fn make_executable(path: &Path) -> Result<(), InstallerError> {
     fs::set_permissions(path, permissions).map_err(InstallerError::Io)
 }
 
+fn plugin_tool_executable(root: &Path, command: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let exe = root.join(format!("{command}.exe"));
+        if exe.is_file() {
+            return exe;
+        }
+    }
+    root.join(command)
+}
+
+fn plugin_tool_commands_exist(root: &Path, commands: &[String]) -> bool {
+    !commands.is_empty()
+        && commands
+            .iter()
+            .all(|command| plugin_tool_executable(root, command).is_file())
+}
+
 #[cfg(not(unix))]
 #[allow(clippy::unnecessary_wraps)]
 fn make_executable(_path: &Path) -> Result<(), InstallerError> {
@@ -1936,6 +2112,19 @@ struct ToolInstallManifest<'a> {
     tool_hash: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginToolInstallManifest<'a> {
+    provider: &'a str,
+    tool: &'a str,
+    version: String,
+    url: &'a str,
+    sha256: &'a str,
+    archive_format: &'static str,
+    strip_components: usize,
+    commands: &'a [String],
+}
+
 fn write_tool_manifest(destination: &Path, release: &ToolRelease) -> Result<(), InstallerError> {
     let manifest = ToolInstallManifest {
         tool: release.kind.to_string(),
@@ -1947,6 +2136,32 @@ fn write_tool_manifest(destination: &Path, release: &ToolRelease) -> Result<(), 
     };
     let contents = serde_json::to_vec_pretty(&manifest).map_err(InstallerError::Manifest)?;
     fs::write(destination.join(".jolter-tool.json"), contents).map_err(InstallerError::Io)
+}
+
+fn write_plugin_tool_manifest(
+    destination: &Path,
+    release: &PluginToolArchive,
+) -> Result<(), InstallerError> {
+    let ArtifactIntegrity::Sha256(sha256) = &release.artifact.integrity else {
+        return Err(InstallerError::UnsupportedIntegrity(
+            release.artifact.integrity.to_string(),
+        ));
+    };
+    let manifest = PluginToolInstallManifest {
+        provider: &release.provider,
+        tool: &release.tool,
+        version: release.version.to_string(),
+        url: &release.artifact.url,
+        sha256,
+        archive_format: match release.artifact.format {
+            ArchiveFormat::Zip => "zip",
+            ArchiveFormat::TarGz => "tar.gz",
+        },
+        strip_components: release.artifact.strip_components,
+        commands: &release.commands,
+    };
+    let contents = serde_json::to_vec_pretty(&manifest).map_err(InstallerError::Manifest)?;
+    fs::write(destination.join(".jolter-plugin-tool.json"), contents).map_err(InstallerError::Io)
 }
 
 #[derive(Debug, Error)]
@@ -2049,6 +2264,8 @@ pub enum InstallerError {
     CorruptInstallation { path: PathBuf },
     #[error("existing tool installation at {path} is incomplete")]
     CorruptToolInstallation { path: PathBuf },
+    #[error("existing plugin tool installation at {path} is incomplete")]
+    CorruptPluginToolInstallation { path: PathBuf },
     #[error("runtime installation was not found at {path}")]
     RuntimeNotInstalled { path: PathBuf },
     #[error("tool installation was not found at {path}")]

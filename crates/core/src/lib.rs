@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -7,13 +7,19 @@ use std::{
 use jolter_config::{CONFIG_FILE_NAME, ProjectConfig, RuntimeConfig};
 use jolter_doctor::Report;
 use jolter_installer::{
-    CacheCleanOutcome, InstallOutcome, Installer, NoProgressReporter, RemovalOutcome,
+    ArchiveFormat, Artifact, ArtifactIntegrity, CacheCleanOutcome, InstallOutcome, Installer,
+    NoProgressReporter, PluginToolArchive, PluginToolInstallOutcome, RemovalOutcome,
     ToolInstallOutcome,
 };
-use jolter_plugin::{PluginManager, PluginRequest, read_installed_manifest};
+use jolter_plugin::{
+    PluginExecutor, PluginManager, PluginPlatform, PluginRequest, PluginToolRelease,
+    read_installed_manifest,
+};
 use jolter_resolver::resolve;
 use jolter_runtime::{RuntimeKind, RuntimeRequest, ToolKind, ToolRequest};
-use jolter_storage::{CacheStats, InstalledPlugin, InstalledRuntime, InstalledTool, Storage};
+use jolter_storage::{
+    CacheStats, InstalledPlugin, InstalledPluginTool, InstalledRuntime, InstalledTool, Storage,
+};
 use semver::Version;
 use thiserror::Error;
 
@@ -23,6 +29,7 @@ pub struct Jolter {
     storage: Storage,
     installer: Installer,
     plugins: PluginManager,
+    plugin_executor: PluginExecutor,
     reporter: Arc<dyn ProgressReporter>,
 }
 
@@ -46,10 +53,12 @@ impl Jolter {
         storage.ensure_layout()?;
         let installer = Installer::new_with_reporter(storage.clone(), reporter.clone())?;
         let plugins = PluginManager::new(storage.clone())?;
+        let plugin_executor = PluginExecutor::new()?;
         Ok(Self {
             storage,
             installer,
             plugins,
+            plugin_executor,
             reporter,
         })
     }
@@ -114,6 +123,10 @@ impl Jolter {
         };
         config.schema_version = jolter_config::CURRENT_SCHEMA_VERSION;
         config.tools.insert(name.to_owned(), selector.to_owned());
+        let provider = self.find_plugin_for_tool(name, Some(&config.plugins))?;
+        config
+            .plugins
+            .insert(provider.canonical_name, provider.version.to_string());
         config.write_to(&path)?;
         Ok(())
     }
@@ -153,6 +166,25 @@ impl Jolter {
             tool: outcome.tool,
             downloaded: outcome.downloaded,
         })
+    }
+
+    pub fn use_plugin_tool(
+        &self,
+        name: &str,
+        selector: &str,
+    ) -> Result<PluginToolAction, CoreError> {
+        let requested = format!("{name}@{selector}");
+        self.report(ProgressAction::Select, &requested);
+        let provider = self.find_plugin_for_tool(name, None)?;
+        let outcome = self.ensure_plugin_tool(&provider, name, selector, false)?;
+        let target = format!(
+            "{}@{} via {}@{}",
+            outcome.tool, outcome.version, outcome.provider, provider.version
+        );
+        self.report(ProgressAction::Activate, &target);
+        self.storage
+            .activate_plugin_tool(&outcome.provider, &outcome.tool, &outcome.version)?;
+        Ok(PluginToolAction::from(outcome))
     }
 
     pub fn update_runtime(&self, request: &RuntimeRequest) -> Result<RuntimeAction, CoreError> {
@@ -210,12 +242,43 @@ impl Jolter {
         })
     }
 
+    pub fn update_plugin_tool(
+        &self,
+        name: &str,
+        selector: Option<&str>,
+    ) -> Result<PluginToolAction, CoreError> {
+        let active = self
+            .storage
+            .active_plugin_tool(name)?
+            .ok_or_else(|| CoreError::NoActivePluginTool(name.to_owned()))?;
+        let provider = self
+            .storage
+            .installed_plugins()?
+            .into_iter()
+            .find(|plugin| plugin.canonical_name == active.provider)
+            .ok_or_else(|| CoreError::PluginNotInstalled(active.provider.clone()))?;
+        let selector = selector.map_or_else(|| active.version.major.to_string(), ToOwned::to_owned);
+        let outcome = self.ensure_plugin_tool(&provider, name, &selector, false)?;
+        let target = format!(
+            "{}@{} via {}@{}",
+            outcome.tool, outcome.version, outcome.provider, provider.version
+        );
+        self.report(ProgressAction::Activate, &target);
+        self.storage
+            .activate_plugin_tool(&outcome.provider, &outcome.tool, &outcome.version)?;
+        Ok(PluginToolAction::from(outcome))
+    }
+
     pub fn list(&self) -> Result<Vec<InstalledRuntime>, CoreError> {
         Ok(self.storage.installed_runtimes()?)
     }
 
     pub fn list_tools(&self) -> Result<Vec<InstalledTool>, CoreError> {
         Ok(self.storage.installed_tools()?)
+    }
+
+    pub fn list_plugin_tools(&self) -> Result<Vec<InstalledPluginTool>, CoreError> {
+        Ok(self.storage.installed_plugin_tools()?)
     }
 
     pub fn list_plugins(&self) -> Result<Vec<InstalledPlugin>, CoreError> {
@@ -331,6 +394,39 @@ impl Jolter {
         Ok(outcome)
     }
 
+    pub fn uninstall_plugin_tool(
+        &self,
+        provider: &str,
+        tool: &str,
+        version: &Version,
+        force: bool,
+    ) -> Result<RemovalOutcome, CoreError> {
+        let target = format!("{tool}@{version} via {provider}");
+        self.report(ProgressAction::Remove, &target);
+        let active = self.storage.active_plugin_tool(tool)?;
+        if active
+            .as_ref()
+            .is_some_and(|active| active.provider == provider && active.version == *version)
+            && !force
+        {
+            return Err(CoreError::ActivePluginToolRemoval {
+                provider: provider.to_owned(),
+                tool: tool.to_owned(),
+                version: version.clone(),
+            });
+        }
+        let outcome = self
+            .installer
+            .uninstall_plugin_tool(provider, tool, version)?;
+        if active
+            .as_ref()
+            .is_some_and(|active| active.provider == provider && active.version == *version)
+        {
+            self.storage.deactivate_plugin_tool(tool, Some(version))?;
+        }
+        Ok(outcome)
+    }
+
     pub fn prune(
         &self,
         project: &Path,
@@ -340,46 +436,11 @@ impl Jolter {
         let resolution = resolve(project)?;
         let runtimes = self.storage.installed_runtimes()?;
         let tools = self.storage.installed_tools()?;
-        let mut protected_runtimes = BTreeSet::new();
-        let mut protected_tools = BTreeSet::new();
-
-        for kind in RuntimeKind::ALL {
-            if let Some(version) = self.storage.active_version(kind)? {
-                protected_runtimes.insert((kind, version));
-            }
-            protected_runtimes.extend(
-                runtimes
-                    .iter()
-                    .rev()
-                    .filter(|runtime| runtime.kind == kind && runtime.is_complete())
-                    .take(keep)
-                    .map(|runtime| (runtime.kind, runtime.version.clone())),
-            );
-        }
-        if let Some(runtime) = resolution.runtime {
-            if let Some(installed) = self.storage.find_matching(&runtime.request)? {
-                protected_runtimes.insert((installed.kind, installed.version));
-            }
-        }
-
-        for kind in ToolKind::ALL {
-            if let Some(version) = self.storage.active_tool_version(kind)? {
-                protected_tools.insert((kind, version));
-            }
-            protected_tools.extend(
-                tools
-                    .iter()
-                    .rev()
-                    .filter(|tool| tool.kind == kind && tool.is_complete())
-                    .take(keep)
-                    .map(|tool| (tool.kind, tool.version.clone())),
-            );
-        }
-        for resolved in resolution.tools {
-            if let Some(installed) = self.storage.find_matching_tool(&resolved.request)? {
-                protected_tools.insert((installed.kind, installed.version));
-            }
-        }
+        let plugin_tools = self.storage.installed_plugin_tools()?;
+        let protected_runtimes = self.protected_runtimes(&resolution, &runtimes, keep)?;
+        let protected_tools = self.protected_tools(&resolution, &tools, keep)?;
+        let protected_plugin_tools =
+            self.protected_plugin_tools(&resolution, &plugin_tools, keep)?;
 
         let runtime_removals = runtimes
             .into_iter()
@@ -401,7 +462,28 @@ impl Jolter {
                 path: tool.path,
                 reclaimed_bytes: 0,
             });
-        let mut removed = runtime_removals.chain(tool_removals).collect::<Vec<_>>();
+        let plugin_tool_removals = plugin_tools
+            .into_iter()
+            .filter(|tool| {
+                !protected_plugin_tools.contains(&(
+                    tool.provider.clone(),
+                    tool.tool.clone(),
+                    tool.version.clone(),
+                ))
+            })
+            .map(|tool| PruneItem {
+                kind: PruneItemKind::PluginTool {
+                    provider: tool.provider,
+                    tool: tool.tool,
+                },
+                version: tool.version,
+                path: tool.path,
+                reclaimed_bytes: 0,
+            });
+        let mut removed = runtime_removals
+            .chain(tool_removals)
+            .chain(plugin_tool_removals)
+            .collect::<Vec<_>>();
 
         for item in &mut removed {
             if dry_run {
@@ -410,16 +492,121 @@ impl Jolter {
             }
             let target = format!("{}@{}", item.kind, item.version);
             self.report(ProgressAction::Remove, &target);
-            let outcome = match item.kind {
+            let outcome = match &item.kind {
                 PruneItemKind::Runtime(kind) => {
-                    self.installer.uninstall_runtime(kind, &item.version)?
+                    self.installer.uninstall_runtime(*kind, &item.version)?
                 }
-                PruneItemKind::Tool(kind) => self.installer.uninstall_tool(kind, &item.version)?,
+                PruneItemKind::Tool(kind) => self.installer.uninstall_tool(*kind, &item.version)?,
+                PruneItemKind::PluginTool { provider, tool } => self
+                    .installer
+                    .uninstall_plugin_tool(provider, tool, &item.version)?,
             };
             item.reclaimed_bytes = outcome.reclaimed_bytes;
         }
 
         Ok(PruneOutcome { removed, dry_run })
+    }
+
+    fn protected_runtimes(
+        &self,
+        resolution: &jolter_resolver::ProjectResolution,
+        runtimes: &[InstalledRuntime],
+        keep: usize,
+    ) -> Result<BTreeSet<(RuntimeKind, Version)>, CoreError> {
+        let mut protected = BTreeSet::new();
+        for kind in RuntimeKind::ALL {
+            if let Some(version) = self.storage.active_version(kind)? {
+                protected.insert((kind, version));
+            }
+            protected.extend(
+                runtimes
+                    .iter()
+                    .rev()
+                    .filter(|runtime| runtime.kind == kind && runtime.is_complete())
+                    .take(keep)
+                    .map(|runtime| (runtime.kind, runtime.version.clone())),
+            );
+        }
+        if let Some(runtime) = &resolution.runtime
+            && let Some(installed) = self.storage.find_matching(&runtime.request)?
+        {
+            protected.insert((installed.kind, installed.version));
+        }
+        Ok(protected)
+    }
+
+    fn protected_tools(
+        &self,
+        resolution: &jolter_resolver::ProjectResolution,
+        tools: &[InstalledTool],
+        keep: usize,
+    ) -> Result<BTreeSet<(ToolKind, Version)>, CoreError> {
+        let mut protected = BTreeSet::new();
+        for kind in ToolKind::ALL {
+            if let Some(version) = self.storage.active_tool_version(kind)? {
+                protected.insert((kind, version));
+            }
+            protected.extend(
+                tools
+                    .iter()
+                    .rev()
+                    .filter(|tool| tool.kind == kind && tool.is_complete())
+                    .take(keep)
+                    .map(|tool| (tool.kind, tool.version.clone())),
+            );
+        }
+        for resolved in &resolution.tools {
+            if let Some(installed) = self.storage.find_matching_tool(&resolved.request)? {
+                protected.insert((installed.kind, installed.version));
+            }
+        }
+        Ok(protected)
+    }
+
+    fn protected_plugin_tools(
+        &self,
+        resolution: &jolter_resolver::ProjectResolution,
+        plugin_tools: &[InstalledPluginTool],
+        keep: usize,
+    ) -> Result<BTreeSet<(String, String, Version)>, CoreError> {
+        let mut protected = BTreeSet::new();
+        for resolved in &resolution.plugin_tools {
+            let provider = self.find_plugin_for_tool(&resolved.name, None)?;
+            if let Some(installed) = self.storage.find_matching_plugin_tool(
+                &provider.canonical_name,
+                &resolved.name,
+                &resolved.selector,
+            )? {
+                protected.insert((installed.provider, installed.tool, installed.version));
+            }
+        }
+        protected.extend(
+            self.storage
+                .active_plugin_tools()?
+                .into_iter()
+                .map(|tool| (tool.provider, tool.tool, tool.version)),
+        );
+        for installed in plugin_tools {
+            protected.extend(
+                plugin_tools
+                    .iter()
+                    .rev()
+                    .filter(|candidate| {
+                        candidate.provider == installed.provider
+                            && candidate.tool == installed.tool
+                            && candidate.is_complete()
+                    })
+                    .take(keep)
+                    .map(|candidate| {
+                        (
+                            candidate.provider.clone(),
+                            candidate.tool.clone(),
+                            candidate.version.clone(),
+                        )
+                    }),
+            );
+        }
+        Ok(protected)
     }
 
     pub fn cache_stats(&self) -> Result<CacheStats, CoreError> {
@@ -470,22 +657,33 @@ impl Jolter {
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
 
-        if !resolution.plugin_tools.is_empty() {
-            for plugin_tool in &resolution.plugin_tools {
-                let provider = self.find_plugin_for_tool(&plugin_tool.name)?;
-                let target = format!(
-                    "{} via {}@{}",
-                    plugin_tool.name, provider.canonical_name, provider.version
-                );
-                self.report(ProgressAction::Resolve, &target);
-            }
-        }
+        let project_plugins = resolution
+            .plugins
+            .iter()
+            .map(|plugin| (plugin.name.clone(), plugin.selector.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let plugin_tools = resolution
+            .plugin_tools
+            .into_iter()
+            .map(|plugin_tool| {
+                let provider =
+                    self.find_plugin_for_tool(&plugin_tool.name, Some(&project_plugins))?;
+                let outcome = self.ensure_plugin_tool(
+                    &provider,
+                    &plugin_tool.name,
+                    &plugin_tool.selector,
+                    repair,
+                )?;
+                Ok(PluginToolAction::from(outcome))
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
 
         Ok(SyncOutcome {
             runtime: action.runtime,
             downloaded: action.downloaded,
             tools,
             plugins: plugin_actions,
+            plugin_tools,
         })
     }
 
@@ -524,14 +722,59 @@ impl Jolter {
         Ok(actions)
     }
 
-    fn find_plugin_for_tool(&self, tool: &str) -> Result<InstalledPlugin, CoreError> {
-        for plugin in self.storage.installed_plugins()?.into_iter().rev() {
+    fn find_plugin_for_tool(
+        &self,
+        tool: &str,
+        project_plugins: Option<&BTreeMap<String, String>>,
+    ) -> Result<InstalledPlugin, CoreError> {
+        let mut providers = Vec::new();
+        for plugin in self.storage.installed_plugins()? {
             let manifest = read_installed_manifest(&plugin.path)?;
             if manifest.provides.tools.contains_key(tool) {
-                return Ok(plugin);
+                providers.push(plugin);
             }
         }
-        Err(CoreError::PluginToolProviderMissing(tool.to_owned()))
+        if providers.is_empty() {
+            return Err(CoreError::PluginToolProviderMissing(tool.to_owned()));
+        }
+        if let Some(project_plugins) = project_plugins {
+            let mut configured = Vec::new();
+            for provider in providers.iter().cloned() {
+                if project_plugins.contains_key(&provider.canonical_name) {
+                    configured.push(provider);
+                    continue;
+                }
+                for name in project_plugins.keys() {
+                    if name.starts_with('@') {
+                        continue;
+                    }
+                    if self.plugins.resolve_name(name).ok().as_deref()
+                        == Some(provider.canonical_name.as_str())
+                    {
+                        configured.push(provider.clone());
+                        break;
+                    }
+                }
+            }
+            if configured.len() == 1 {
+                return configured
+                    .pop()
+                    .ok_or_else(|| CoreError::PluginToolProviderMissing(tool.to_owned()));
+            }
+        }
+        if providers.len() == 1 {
+            return providers
+                .pop()
+                .ok_or_else(|| CoreError::PluginToolProviderMissing(tool.to_owned()));
+        }
+        Err(CoreError::AmbiguousPluginToolProvider {
+            tool: tool.to_owned(),
+            providers: providers
+                .into_iter()
+                .map(|provider| provider.canonical_name)
+                .collect::<Vec<_>>()
+                .join(", "),
+        })
     }
 
     fn plugin_commands_in_active_shims(&self, canonical: &str) -> Result<bool, CoreError> {
@@ -601,6 +844,87 @@ impl Jolter {
         }
     }
 
+    fn ensure_plugin_tool(
+        &self,
+        provider: &InstalledPlugin,
+        tool: &str,
+        selector: &str,
+        repair: bool,
+    ) -> Result<PluginToolInstallOutcome, CoreError> {
+        if !selector.eq_ignore_ascii_case("latest")
+            && let Some(installed) =
+                self.storage
+                    .find_matching_plugin_tool(&provider.canonical_name, tool, selector)?
+            && self.validate_plugin_tool(provider, &installed)?
+        {
+            let target = format!(
+                "{}@{} via {}@{}",
+                installed.tool, installed.version, provider.canonical_name, provider.version
+            );
+            self.report(ProgressAction::Reuse, &target);
+            return Ok(PluginToolInstallOutcome {
+                provider: installed.provider,
+                tool: installed.tool,
+                version: installed.version,
+                path: installed.path,
+                commands: installed.commands,
+                downloaded: false,
+            });
+        }
+
+        let release = self.resolve_plugin_tool(provider, tool, selector)?;
+        let archive = plugin_tool_archive(provider, tool, release)?;
+        let outcome = self.installer.install_plugin_tool(&archive, repair)?;
+        let installed = InstalledPluginTool {
+            provider: outcome.provider.clone(),
+            tool: outcome.tool.clone(),
+            version: outcome.version.clone(),
+            path: outcome.path.clone(),
+            commands: outcome.commands.clone(),
+        };
+        if !self.validate_plugin_tool(provider, &installed)? {
+            return Err(CoreError::InvalidPluginToolInstallation {
+                provider: provider.canonical_name.clone(),
+                tool: tool.to_owned(),
+                version: installed.version,
+                path: installed.path,
+            });
+        }
+        Ok(outcome)
+    }
+
+    fn resolve_plugin_tool(
+        &self,
+        provider: &InstalledPlugin,
+        tool: &str,
+        selector: &str,
+    ) -> Result<PluginToolRelease, CoreError> {
+        let target = format!(
+            "{}@{} via {}@{}",
+            tool, selector, provider.canonical_name, provider.version
+        );
+        self.report(ProgressAction::Resolve, &target);
+        Ok(self.plugin_executor.resolve_tool(
+            &provider.path.join("plugin.wasm"),
+            tool,
+            selector,
+            current_plugin_platform(),
+        )?)
+    }
+
+    fn validate_plugin_tool(
+        &self,
+        provider: &InstalledPlugin,
+        tool: &InstalledPluginTool,
+    ) -> Result<bool, CoreError> {
+        Ok(self.plugin_executor.validate_installed(
+            &provider.path.join("plugin.wasm"),
+            &tool.tool,
+            &tool.version,
+            &tool.path,
+        )?)
+    }
+
     fn active_node_version(&self, request: &ToolRequest) -> Result<Version, CoreError> {
         let version = self
             .storage
@@ -625,6 +949,53 @@ impl Jolter {
     }
 }
 
+fn plugin_tool_archive(
+    provider: &InstalledPlugin,
+    tool: &str,
+    release: PluginToolRelease,
+) -> Result<PluginToolArchive, CoreError> {
+    let format = match release.archive_format.as_str() {
+        "zip" => ArchiveFormat::Zip,
+        "tar.gz" | "tgz" => ArchiveFormat::TarGz,
+        value => return Err(CoreError::UnsupportedPluginToolArchive(value.to_owned())),
+    };
+    let file_name = release
+        .url
+        .split(['/', '?', '#'])
+        .rfind(|part| !part.is_empty())
+        .unwrap_or("plugin-tool-archive")
+        .to_owned();
+    Ok(PluginToolArchive {
+        provider: provider.canonical_name.clone(),
+        tool: tool.to_owned(),
+        version: release.version,
+        artifact: Artifact {
+            url: release.url,
+            integrity: ArtifactIntegrity::Sha256(release.sha256),
+            file_name,
+            format,
+            strip_components: release.strip_components,
+        },
+        commands: release.commands,
+    })
+}
+
+fn current_plugin_platform() -> PluginPlatform {
+    PluginPlatform {
+        os: match std::env::consts::OS {
+            "macos" => "darwin",
+            other => other,
+        }
+        .to_owned(),
+        arch: match std::env::consts::ARCH {
+            "x86_64" => "x86_64",
+            "aarch64" => "aarch64",
+            other => other,
+        }
+        .to_owned(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeAction {
     pub runtime: InstalledRuntime,
@@ -646,6 +1017,7 @@ pub struct SyncOutcome {
     pub downloaded: bool,
     pub tools: Vec<ToolAction>,
     pub plugins: Vec<PluginAction>,
+    pub plugin_tools: Vec<PluginToolAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -660,10 +1032,34 @@ pub struct PluginAction {
     pub plugin: InstalledPlugin,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginToolAction {
+    pub provider: String,
+    pub tool: InstalledPluginTool,
+    pub downloaded: bool,
+}
+
+impl From<PluginToolInstallOutcome> for PluginToolAction {
+    fn from(value: PluginToolInstallOutcome) -> Self {
+        Self {
+            provider: value.provider.clone(),
+            tool: InstalledPluginTool {
+                provider: value.provider,
+                tool: value.tool,
+                version: value.version,
+                path: value.path,
+                commands: value.commands,
+            },
+            downloaded: value.downloaded,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PruneItemKind {
     Runtime(RuntimeKind),
     Tool(ToolKind),
+    PluginTool { provider: String, tool: String },
 }
 
 impl std::fmt::Display for PruneItemKind {
@@ -671,6 +1067,7 @@ impl std::fmt::Display for PruneItemKind {
         match self {
             Self::Runtime(kind) => kind.fmt(formatter),
             Self::Tool(kind) => kind.fmt(formatter),
+            Self::PluginTool { provider, tool } => write!(formatter, "{tool} via {provider}"),
         }
     }
 }
@@ -714,10 +1111,33 @@ pub enum CoreError {
         "refusing to uninstall active {kind}@{version}; activate another version or pass --force"
     )]
     ActiveToolRemoval { kind: ToolKind, version: Version },
+    #[error(
+        "refusing to uninstall active plugin tool {tool}@{version} via {provider}; activate another version or pass --force"
+    )]
+    ActivePluginToolRemoval {
+        provider: String,
+        tool: String,
+        version: Version,
+    },
+    #[error("no active plugin tool `{0}`; pass an explicit selector such as {0}@latest")]
+    NoActivePluginTool(String),
     #[error("project requires plugin {name}@{selector}; rerun with `--yes` to install it")]
     MissingProjectPlugin { name: String, selector: String },
     #[error("no installed plugin provides tool `{0}`")]
     PluginToolProviderMissing(String),
+    #[error(
+        "multiple installed plugins provide tool `{tool}` ({providers}); declare one provider in jolter.json"
+    )]
+    AmbiguousPluginToolProvider { tool: String, providers: String },
+    #[error("plugin tool archive format `{0}` is not supported")]
+    UnsupportedPluginToolArchive(String),
+    #[error("plugin `{provider}` reported invalid installation for `{tool}@{version}` at {path}")]
+    InvalidPluginToolInstallation {
+        provider: String,
+        tool: String,
+        version: Version,
+        path: PathBuf,
+    },
     #[error(
         "direct use of plugin-provided tool `{0}` is not available yet; add it to jolter.json and run `jolter sync --yes`"
     )]
@@ -812,6 +1232,46 @@ mod tests {
         assert_eq!(config.runtime.node.as_deref(), Some("24"));
         assert_eq!(config.tools.get("pnpm").map(String::as_str), Some("10"));
         assert_eq!(config.tools.get("yarn").map(String::as_str), Some("4"));
+    }
+
+    #[test]
+    fn pin_plugin_tool_records_tool_and_exact_provider() {
+        let project = tempfile::tempdir().unwrap();
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        storage.ensure_layout().unwrap();
+        let provider_version = Version::new(1, 2, 3);
+        let plugin = storage.plugin_version_dir("@jolter/jolter", &provider_version);
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(
+            plugin.join(".jolter-plugin.json"),
+            r#"{
+                "canonicalName":"@jolter/jolter",
+                "requestedName":"jolter",
+                "version":"1.2.3",
+                "registryUrl":"https://registry.jolter.dev",
+                "wasmSha256":"0000000000000000000000000000000000000000000000000000000000000000",
+                "commands":["jolter"],
+                "provides":{"tools":{"jolter":{"commands":["jolter"]}}}
+            }"#,
+        )
+        .unwrap();
+        let jolter = Jolter::with_storage(storage).unwrap();
+
+        jolter
+            .pin_plugin_tool(project.path(), "jolter", "latest")
+            .unwrap();
+
+        let config = ProjectConfig::from_path(&project.path().join(CONFIG_FILE_NAME)).unwrap();
+        assert_eq!(config.schema_version, jolter_config::CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            config.tools.get("jolter").map(String::as_str),
+            Some("latest")
+        );
+        assert_eq!(
+            config.plugins.get("@jolter/jolter").map(String::as_str),
+            Some("1.2.3")
+        );
     }
 
     #[test]

@@ -1,0 +1,30 @@
+package jolter:plugin;
+
+interface api {
+  record platform {
+    os: string,
+    arch: string
+  }
+
+  record tool {
+    name: string,
+    commands: list<string>
+  }
+
+  record tool-release {
+    version: string,
+    url: string,
+    sha256: string,
+    archive-format: string,
+    strip-components: u32,
+    commands: list<string>
+  }
+}
+
+world jolter-plugin {
+  use api.{platform, tool, tool-release};
+
+  export list-tools: func() -> list<tool>;
+  export resolve-tool: func(tool: string, selector: string, platform: platform) -> tool-release;
+  export validate-installed: func(tool: string, version: string, root: string) -> bool;
+}

@@ -3,7 +3,7 @@ mod output;
 use std::{
     env,
     fs::OpenOptions,
-    io::Write,
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode},
     sync::Arc,
@@ -59,14 +59,14 @@ enum Command {
     /// Install and activate a runtime or tool.
     Use {
         /// Tool request, for example node@24 or pnpm@10.
-        #[arg(value_parser = parse_use_target)]
-        target: UseTarget,
+        #[arg(value_parser = parse_use_target, num_args = 0..)]
+        target: Vec<UseTarget>,
     },
     /// Write a runtime or tool requirement to jolter.json.
     Pin {
         /// Runtime or tool request, for example node@24 or pnpm@10.
-        #[arg(value_parser = parse_use_target)]
-        target: UseTarget,
+        #[arg(value_parser = parse_use_target, num_args = 1..)]
+        target: Vec<UseTarget>,
     },
     /// Update an active runtime or tool.
     #[command(visible_alias = "up")]
@@ -211,6 +211,7 @@ enum CompletionShell {
 enum UninstallTarget {
     Runtime(RuntimeKind, Version),
     Tool(ToolKind, Version),
+    PluginTool { name: String, version: Version },
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +225,10 @@ enum UseTarget {
 enum UpdateTarget {
     Runtime(RuntimeKind, Option<RuntimeRequest>),
     Tool(ToolKind, Option<ToolRequest>),
+    PluginTool {
+        name: String,
+        selector: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -308,12 +313,18 @@ fn run(cli: Cli, ui: &Arc<TerminalUi>) -> Result<ExitCode, CliError> {
         }
         Command::Use { target } => run_use(&jolter, target, ui),
         Command::Pin { target } => {
-            let pinned = target.to_string();
-            match target {
-                UseTarget::Runtime(request) => jolter.pin_runtime(&current_dir, &request)?,
-                UseTarget::Tool(request) => jolter.pin_tool(&current_dir, &request)?,
-                UseTarget::PluginTool { name, selector } => {
-                    jolter.pin_plugin_tool(&current_dir, &name, &selector)?;
+            let pinned = target
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            for target in target {
+                match target {
+                    UseTarget::Runtime(request) => jolter.pin_runtime(&current_dir, &request)?,
+                    UseTarget::Tool(request) => jolter.pin_tool(&current_dir, &request)?,
+                    UseTarget::PluginTool { name, selector } => {
+                        jolter.pin_plugin_tool(&current_dir, &name, &selector)?;
+                    }
                 }
             }
             ui.success(format!(
@@ -358,43 +369,100 @@ fn run(cli: Cli, ui: &Arc<TerminalUi>) -> Result<ExitCode, CliError> {
     }
 }
 
-fn run_use(jolter: &Jolter, target: UseTarget, ui: &TerminalUi) -> Result<ExitCode, CliError> {
-    match target {
-        UseTarget::Runtime(request) => {
-            let action = jolter.use_runtime(&request)?;
-            install_shims(jolter)?;
-            let verb = if action.downloaded {
-                "Installed and activated"
-            } else {
-                "Activated"
-            };
-            ui.success(format!(
-                "{verb} {}@{} at {}",
-                action.runtime.kind,
-                action.runtime.version,
-                action.runtime.path.display()
-            ));
-        }
-        UseTarget::Tool(request) => {
-            let action = jolter.use_tool(&request)?;
-            install_shims(jolter)?;
-            let verb = if action.downloaded {
-                "Installed and activated"
-            } else {
-                "Activated"
-            };
-            ui.success(format!(
-                "{verb} tool {}@{} at {}",
-                action.tool.kind,
-                action.tool.version,
-                action.tool.path.display()
-            ));
-        }
-        UseTarget::PluginTool { name, .. } => {
-            return Err(jolter_core::CoreError::DirectPluginToolUseUnsupported(name).into());
+fn run_use(
+    jolter: &Jolter,
+    targets: Vec<UseTarget>,
+    ui: &TerminalUi,
+) -> Result<ExitCode, CliError> {
+    let targets = if targets.is_empty() {
+        vec![interactive_use_target(jolter, ui)?]
+    } else {
+        targets
+    };
+    for target in targets
+        .iter()
+        .filter(|target| matches!(target, UseTarget::Runtime(_)))
+        .chain(
+            targets
+                .iter()
+                .filter(|target| !matches!(target, UseTarget::Runtime(_))),
+        )
+    {
+        match target.clone() {
+            UseTarget::Runtime(request) => {
+                let action = jolter.use_runtime(&request)?;
+                install_shims(jolter)?;
+                let verb = if action.downloaded {
+                    "Installed and activated"
+                } else {
+                    "Activated"
+                };
+                ui.success(format!(
+                    "{verb} {}@{} at {}",
+                    action.runtime.kind,
+                    action.runtime.version,
+                    action.runtime.path.display()
+                ));
+            }
+            UseTarget::Tool(request) => {
+                let action = jolter.use_tool(&request)?;
+                install_shims(jolter)?;
+                let verb = if action.downloaded {
+                    "Installed and activated"
+                } else {
+                    "Activated"
+                };
+                ui.success(format!(
+                    "{verb} tool {}@{} at {}",
+                    action.tool.kind,
+                    action.tool.version,
+                    action.tool.path.display()
+                ));
+            }
+            UseTarget::PluginTool { name, selector } => {
+                let action = jolter.use_plugin_tool(&name, &selector)?;
+                install_shims(jolter)?;
+                let verb = if action.downloaded {
+                    "Installed and activated"
+                } else {
+                    "Activated"
+                };
+                ui.success(format!(
+                    "{verb} plugin tool {}@{} via {} at {}",
+                    action.tool.tool,
+                    action.tool.version,
+                    action.provider,
+                    action.tool.path.display()
+                ));
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn interactive_use_target(jolter: &Jolter, ui: &TerminalUi) -> Result<UseTarget, CliError> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(CliError::InteractiveUseRequiresTty);
+    }
+    ui.finish_progress();
+    let mut choices = vec![
+        "node@latest".to_owned(),
+        "bun@latest".to_owned(),
+        "deno@latest".to_owned(),
+        "npm@latest".to_owned(),
+        "pnpm@latest".to_owned(),
+        "yarn@latest".to_owned(),
+    ];
+    for plugin_tool in jolter.list_plugin_tools()? {
+        choices.push(format!("{}@latest", plugin_tool.tool));
+    }
+    choices.sort();
+    choices.dedup();
+    let selected = inquire::Select::new("Use runtime or tool", choices)
+        .with_help_message("Type to filter, then press Enter")
+        .prompt()
+        .map_err(|error| CliError::InteractivePrompt(error.to_string()))?;
+    parse_use_target(&selected).map_err(CliError::InteractiveSelection)
 }
 
 fn run_plugin(
@@ -507,6 +575,17 @@ fn run_update(
                     ui,
                 );
             }
+            UpdateTarget::PluginTool { name, selector } => {
+                let previous = jolter.storage().active_plugin_tool(&name)?;
+                let action = jolter.update_plugin_tool(&name, selector.as_deref())?;
+                print_update_result(
+                    &name,
+                    previous.as_ref().map(|tool| &tool.version),
+                    &action.tool.version,
+                    &action.tool.path,
+                    ui,
+                );
+            }
         }
     }
     install_shims(jolter)?;
@@ -524,6 +603,12 @@ fn active_update_targets(jolter: &Jolter) -> Result<Vec<UpdateTarget>, CliError>
         if jolter.storage().active_tool_version(kind)?.is_some() {
             targets.push(UpdateTarget::Tool(kind, None));
         }
+    }
+    for tool in jolter.storage().active_plugin_tools()? {
+        targets.push(UpdateTarget::PluginTool {
+            name: tool.tool,
+            selector: None,
+        });
     }
     Ok(targets)
 }
@@ -602,6 +687,21 @@ fn run_uninstall(
             let outcome = jolter.uninstall_tool(kind, &version, force)?;
             (kind.to_string(), version, outcome)
         }
+        UninstallTarget::PluginTool { name, version } => {
+            let matches = jolter
+                .list_plugin_tools()?
+                .into_iter()
+                .filter(|tool| tool.tool == name && tool.version == version)
+                .collect::<Vec<_>>();
+            let tool = match matches.as_slice() {
+                [tool] => tool,
+                [] => return Err(CliError::PluginToolUninstallTargetMissing(name, version)),
+                _ => return Err(CliError::PluginToolUninstallTargetAmbiguous(name, version)),
+            };
+            let provider = tool.provider.clone();
+            let outcome = jolter.uninstall_plugin_tool(&provider, &name, &version, force)?;
+            (format!("{name} via {provider}"), version, outcome)
+        }
     };
     ui.success(format!(
         "Uninstalled {name}@{version} from {} ({})",
@@ -675,8 +775,9 @@ fn run_setup_ci(
 fn print_inventory(jolter: &Jolter, ui: &TerminalUi) -> Result<(), CliError> {
     let runtimes = jolter.list()?;
     let tools = jolter.list_tools()?;
+    let plugin_tools = jolter.list_plugin_tools()?;
     let plugins = jolter.list_plugins()?;
-    if runtimes.is_empty() && tools.is_empty() && plugins.is_empty() {
+    if runtimes.is_empty() && tools.is_empty() && plugin_tools.is_empty() && plugins.is_empty() {
         ui.info("No runtimes or tools installed.");
         return Ok(());
     }
@@ -714,6 +815,27 @@ fn print_inventory(jolter: &Jolter, ui: &TerminalUi) -> Result<(), CliError> {
                 format!("{}@{}", tool.kind, tool.version),
                 format!("[{}]", installation_status(tool.is_complete())),
                 tool.path.display().to_string(),
+            ));
+        }
+        ui.table(&rows);
+    }
+    if !plugin_tools.is_empty() {
+        ui.heading("Plugin Tools");
+        let mut rows = Vec::with_capacity(plugin_tools.len());
+        for tool in plugin_tools {
+            let active = jolter.storage().active_plugin_tool(&tool.tool)?;
+            let marker = if active.as_ref().is_some_and(|active| {
+                active.provider == tool.provider && active.version == tool.version
+            }) {
+                '*'
+            } else {
+                ' '
+            };
+            rows.push(TableRow::new(
+                marker,
+                format!("{}@{}", tool.tool, tool.version),
+                format!("[{}]", installation_status(tool.is_complete())),
+                format!("{} via {}", tool.path.display(), tool.provider),
             ));
         }
         ui.table(&rows);
@@ -769,6 +891,24 @@ fn print_inventory_json(jolter: &Jolter) -> Result<(), CliError> {
             }))
         })
         .collect::<Result<Vec<_>, jolter_storage::StorageError>>()?;
+    let plugin_tools = jolter
+        .list_plugin_tools()?
+        .into_iter()
+        .map(|tool| {
+            let active = jolter.storage().active_plugin_tool(&tool.tool)?;
+            Ok(serde_json::json!({
+                "kind": "plugin-tool",
+                "name": tool.tool,
+                "provider": tool.provider,
+                "version": tool.version.to_string(),
+                "path": tool.path,
+                "ready": tool.is_complete(),
+                "active": active.as_ref().is_some_and(|active| {
+                    active.provider == tool.provider && active.version == tool.version
+                }),
+            }))
+        })
+        .collect::<Result<Vec<_>, jolter_storage::StorageError>>()?;
     let plugins = jolter
         .list_plugins()?
         .into_iter()
@@ -786,6 +926,7 @@ fn print_inventory_json(jolter: &Jolter) -> Result<(), CliError> {
         serde_json::to_string_pretty(&serde_json::json!({
             "runtimes": runtimes,
             "tools": tools,
+            "pluginTools": plugin_tools,
             "plugins": plugins,
         }))
         .map_err(CliError::Json)?
@@ -1027,6 +1168,20 @@ fn print_sync_outcome(prefix: &str, outcome: &SyncOutcome, ui: &TerminalUi) {
             tool.tool.path.display()
         ));
     }
+    for tool in &outcome.plugin_tools {
+        let verb = if tool.downloaded {
+            "Installed"
+        } else {
+            "Selected"
+        };
+        ui.success(format!(
+            "{verb} plugin tool {}@{} via {} at {}",
+            tool.tool.tool,
+            tool.tool.version,
+            tool.provider,
+            tool.tool.path.display()
+        ));
+    }
     for plugin in &outcome.plugins {
         ui.success(format!(
             "Selected plugin {}@{} at {}",
@@ -1099,6 +1254,15 @@ fn configure_ci_environment(
                 .collect::<Vec<_>>()
                 .join(",");
             append_ci_line("GITHUB_OUTPUT", &format!("plugins={plugins}"))?;
+        }
+        if !outcome.plugin_tools.is_empty() {
+            let plugin_tools = outcome
+                .plugin_tools
+                .iter()
+                .map(|action| format!("{}@{}", action.tool.tool, action.tool.version))
+                .collect::<Vec<_>>()
+                .join(",");
+            append_ci_line("GITHUB_OUTPUT", &format!("plugin_tools={plugin_tools}"))?;
         }
         append_ci_line(
             "GITHUB_OUTPUT",
@@ -1177,6 +1341,18 @@ fn print_ci_json(jolter: &Jolter, outcome: &SyncOutcome, provider: &str) -> Resu
             })
         })
         .collect::<Vec<_>>();
+    let plugin_tools = outcome
+        .plugin_tools
+        .iter()
+        .map(|action| {
+            serde_json::json!({
+                "name": action.tool.tool,
+                "provider": action.provider,
+                "version": action.tool.version.to_string(),
+                "path": action.tool.path,
+            })
+        })
+        .collect::<Vec<_>>();
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -1187,6 +1363,7 @@ fn print_ci_json(jolter: &Jolter, outcome: &SyncOutcome, provider: &str) -> Resu
                 "path": outcome.runtime.path,
             },
             "tools": tools,
+            "pluginTools": plugin_tools,
             "plugins": plugins,
             "shims": jolter.storage().shims_dir(),
             "cache": jolter.storage().cache_dir(),
@@ -1277,9 +1454,10 @@ fn parse_update_target(value: &str) -> Result<UpdateTarget, String> {
         return match parse_use_target(value)? {
             UseTarget::Runtime(request) => Ok(UpdateTarget::Runtime(request.kind, Some(request))),
             UseTarget::Tool(request) => Ok(UpdateTarget::Tool(request.kind, Some(request))),
-            UseTarget::PluginTool { name, .. } => Err(format!(
-                "plugin-provided tool `{name}` updates are managed by `jolter sync --yes`"
-            )),
+            UseTarget::PluginTool { name, selector } => Ok(UpdateTarget::PluginTool {
+                name,
+                selector: Some(selector),
+            }),
         };
     }
     match value.to_ascii_lowercase().as_str() {
@@ -1291,9 +1469,13 @@ fn parse_update_target(value: &str) -> Result<UpdateTarget, String> {
             .parse()
             .map(|kind| UpdateTarget::Tool(kind, None))
             .map_err(|error: jolter_runtime::ToolRequestError| error.to_string()),
-        _ => Err(format!(
-            "unsupported tool `{value}`; expected node, bun, deno, npm, pnpm, or yarn"
-        )),
+        _ => {
+            validate_plugin_tool_target(value, "latest")?;
+            Ok(UpdateTarget::PluginTool {
+                name: value.to_owned(),
+                selector: None,
+            })
+        }
     }
 }
 
@@ -1313,9 +1495,13 @@ fn parse_uninstall_target(value: &str) -> Result<UninstallTarget, String> {
             .parse()
             .map(|kind| UninstallTarget::Tool(kind, version))
             .map_err(|error: jolter_runtime::ToolRequestError| error.to_string()),
-        _ => Err(format!(
-            "unsupported tool `{name}`; expected node, bun, deno, npm, pnpm, or yarn"
-        )),
+        _ => {
+            validate_plugin_tool_target(name, selector)?;
+            Ok(UninstallTarget::PluginTool {
+                name: name.to_owned(),
+                version,
+            })
+        }
     }
 }
 
@@ -1358,7 +1544,9 @@ fn run_shim(shim: &str) -> Result<ExitCode, CliError> {
     let mut command = runtime_command(&resolved.executable);
     command.args(&resolved.arguments);
     command.args(env::args_os().skip(1));
-    prepend_runtime_path(&mut command, resolved.runtime.kind, &resolved.runtime_root)?;
+    if let (Some(runtime), Some(runtime_root)) = (&resolved.runtime, &resolved.runtime_root) {
+        prepend_runtime_path(&mut command, runtime.kind, runtime_root)?;
+    }
 
     #[cfg(unix)]
     {
@@ -1418,6 +1606,18 @@ enum CliError {
     NoActiveUpdateTarget(String),
     #[error("pass a plugin name or use `jolter plugin update --all`")]
     PluginUpdateTargetRequired,
+    #[error("`jolter use` without a target requires an interactive terminal")]
+    InteractiveUseRequiresTty,
+    #[error("interactive selection failed: {0}")]
+    InteractivePrompt(String),
+    #[error("interactive selection produced an invalid target: {0}")]
+    InteractiveSelection(String),
+    #[error("plugin tool `{0}@{1}` is not installed")]
+    PluginToolUninstallTargetMissing(String, Version),
+    #[error(
+        "plugin tool `{0}@{1}` is installed from multiple providers; remove by pruning or uninstall one provider first"
+    )]
+    PluginToolUninstallTargetAmbiguous(String, Version),
     #[error("invalid update request: {0}")]
     UpdateRequest(String),
     #[error("failed to determine the current directory: {0}")]

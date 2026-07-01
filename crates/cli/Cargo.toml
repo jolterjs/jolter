@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 clap_complete.workspace = true
+inquire.workspace = true
 jolter-core = { path = "../core" }
 jolter-doctor = { path = "../doctor" }
 jolter-plugin = { path = "../plugin" }

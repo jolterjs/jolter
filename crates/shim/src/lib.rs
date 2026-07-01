@@ -1,11 +1,12 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
 
 use jolter_resolver::resolve;
 use jolter_runtime::{RuntimeKind, RuntimeRequest, ToolKind, ToolRequest};
-use jolter_storage::{InstalledRuntime, InstalledTool, Storage};
+use jolter_storage::{InstalledPluginTool, InstalledRuntime, InstalledTool, Storage};
 use semver::Version;
 use thiserror::Error;
 
@@ -22,8 +23,8 @@ pub enum ShimTarget {
 pub struct ResolvedCommand {
     pub executable: PathBuf,
     pub arguments: Vec<PathBuf>,
-    pub runtime_root: PathBuf,
-    pub runtime: InstalledRuntime,
+    pub runtime_root: Option<PathBuf>,
+    pub runtime: Option<InstalledRuntime>,
 }
 
 #[must_use]
@@ -48,14 +49,32 @@ pub fn resolve_command(
     let target = target_for_command(command)
         .or_else(|| plugin_command_exists(storage, command).then_some(ShimTarget::PluginCommand))
         .ok_or_else(|| ShimError::UnsupportedCommand(command.to_owned()))?;
+    let project_resolution = resolve(project)?;
+    if target == ShimTarget::PluginCommand {
+        let tool = match project_plugin_tool_for_command(storage, command, &project_resolution)? {
+            Some(tool) => Some(tool),
+            None => active_plugin_tool_for_command(storage, command)?,
+        }
+        .ok_or_else(|| ShimError::PluginToolNotInstalled(command.to_owned()))?;
+        let executable = tool.executable_for_command(command);
+        if !executable.is_file() {
+            return Err(ShimError::ExecutableNotFound {
+                command: command.to_owned(),
+                path: executable,
+            });
+        }
+        return Ok(ResolvedCommand {
+            executable,
+            arguments: Vec::new(),
+            runtime_root: None,
+            runtime: None,
+        });
+    }
     let kind = match target {
         ShimTarget::Runtime(kind) => kind,
         ShimTarget::NodeTool(_) => RuntimeKind::Node,
-        ShimTarget::PluginCommand => {
-            return Err(ShimError::PluginToolNotInstalled(command.to_owned()));
-        }
+        ShimTarget::PluginCommand => unreachable!("plugin command returned early"),
     };
-    let project_resolution = resolve(project)?;
     let project_request = project_resolution
         .runtime
         .filter(|runtime| runtime.request.kind == kind)
@@ -109,9 +128,7 @@ pub fn resolve_command(
                 )
             }
         }
-        ShimTarget::PluginCommand => {
-            return Err(ShimError::PluginToolNotInstalled(command.to_owned()));
-        }
+        ShimTarget::PluginCommand => unreachable!("plugin command returned early"),
     };
     if !executable.is_file() {
         return Err(ShimError::ExecutableNotFound {
@@ -123,9 +140,52 @@ pub fn resolve_command(
     Ok(ResolvedCommand {
         executable,
         arguments,
-        runtime_root: runtime.path.clone(),
-        runtime,
+        runtime_root: Some(runtime.path.clone()),
+        runtime: Some(runtime),
     })
+}
+
+fn project_plugin_tool_for_command(
+    storage: &Storage,
+    command: &str,
+    resolution: &jolter_resolver::ProjectResolution,
+) -> Result<Option<InstalledPluginTool>, ShimError> {
+    let configured_providers = resolution
+        .plugins
+        .iter()
+        .filter(|plugin| plugin.name.starts_with('@'))
+        .map(|plugin| plugin.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for requirement in &resolution.plugin_tools {
+        let Some(tool) = storage
+            .installed_plugin_tools()?
+            .into_iter()
+            .rev()
+            .find(|tool| {
+                tool.tool == requirement.name
+                    && (configured_providers.is_empty()
+                        || configured_providers.contains(tool.provider.as_str()))
+                    && tool.commands.iter().any(|candidate| candidate == command)
+                    && tool.is_complete()
+            })
+        else {
+            if plugin_command_matches_tool(storage, command, &requirement.name)? {
+                return Err(ShimError::PluginToolNotInstalled(command.to_owned()));
+            }
+            continue;
+        };
+        return Ok(Some(tool));
+    }
+    Ok(None)
+}
+
+fn active_plugin_tool_for_command(
+    storage: &Storage,
+    command: &str,
+) -> Result<Option<InstalledPluginTool>, ShimError> {
+    Ok(storage.active_plugin_tools()?.into_iter().find(|tool| {
+        tool.commands.iter().any(|candidate| candidate == command) && tool.is_complete()
+    }))
 }
 
 fn active_tool_for_command(
@@ -242,6 +302,38 @@ fn plugin_command_exists(storage: &Storage, command: &str) -> bool {
         .is_ok_and(|commands| commands.iter().any(|candidate| candidate == command))
 }
 
+fn plugin_command_matches_tool(
+    storage: &Storage,
+    command: &str,
+    tool: &str,
+) -> Result<bool, ShimError> {
+    for plugin in storage.installed_plugins()? {
+        let path = plugin.path.join(".jolter-plugin.json");
+        if !path.is_file() {
+            continue;
+        }
+        let contents =
+            fs::read_to_string(&path).map_err(|source| ShimError::ReadPluginManifest {
+                path: path.clone(),
+                source,
+            })?;
+        let manifest: PluginShimManifest =
+            serde_json::from_str(&contents).map_err(|source| ShimError::ParsePluginManifest {
+                path: path.clone(),
+                source,
+            })?;
+        if manifest.provides.tools.get(tool).is_some_and(|definition| {
+            definition
+                .commands
+                .iter()
+                .any(|candidate| candidate == command)
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn valid_plugin_command(command: &str) -> bool {
     !command.is_empty()
         && command.chars().all(|character| {
@@ -253,6 +345,20 @@ fn valid_plugin_command(command: &str) -> bool {
 
 #[derive(Debug, serde::Deserialize)]
 struct PluginShimManifest {
+    #[serde(default)]
+    commands: Vec<String>,
+    #[serde(default)]
+    provides: PluginShimProvides,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct PluginShimProvides {
+    #[serde(default)]
+    tools: std::collections::BTreeMap<String, PluginShimTool>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct PluginShimTool {
     #[serde(default)]
     commands: Vec<String>,
 }
@@ -380,7 +486,7 @@ mod tests {
 
         let resolved = resolve_command("node", project.path(), &storage).unwrap();
 
-        assert_eq!(resolved.runtime.version, Version::new(24, 1, 0));
+        assert_eq!(resolved.runtime.unwrap().version, Version::new(24, 1, 0));
         assert!(resolved.arguments.is_empty());
     }
 
@@ -493,7 +599,7 @@ mod tests {
 
         assert_eq!(resolved.executable, npm);
         assert!(resolved.arguments.is_empty());
-        assert_eq!(resolved.runtime.version, version);
+        assert_eq!(resolved.runtime.unwrap().version, version);
     }
 
     #[test]
@@ -539,6 +645,79 @@ mod tests {
             resolve_command("hello", project.path(), &storage),
             Err(ShimError::PluginToolNotInstalled(command)) if command == "hello"
         ));
+    }
+
+    #[test]
+    fn resolves_active_plugin_tool_command() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+        write_plugin_manifest(&storage, "@local/hello");
+        let executable = write_plugin_tool(&storage, "@local/hello", "hello", "hello");
+        storage
+            .activate_plugin_tool("@local/hello", "hello", &Version::new(1, 0, 0))
+            .unwrap();
+
+        let resolved = resolve_command("hello", project.path(), &storage).unwrap();
+
+        assert_eq!(resolved.executable, executable);
+        assert!(resolved.arguments.is_empty());
+        assert!(resolved.runtime.is_none());
+        assert!(resolved.runtime_root.is_none());
+    }
+
+    #[test]
+    fn resolves_project_plugin_tool_before_active_plugin_tool() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+        fs::write(
+            project.path().join("jolter.json"),
+            r#"{"schemaVersion":2,"tools":{"hello":"1"},"plugins":{"@local/hello":"1"}}"#,
+        )
+        .unwrap();
+        write_plugin_manifest(&storage, "@local/hello");
+        let project_executable = write_plugin_tool(&storage, "@local/hello", "hello", "hello");
+        write_plugin_manifest(&storage, "@local/other");
+        let _active_executable = write_plugin_tool(&storage, "@local/other", "hello", "hello");
+        storage
+            .activate_plugin_tool("@local/other", "hello", &Version::new(1, 0, 0))
+            .unwrap();
+
+        let resolved = resolve_command("hello", project.path(), &storage).unwrap();
+
+        assert_eq!(resolved.executable, project_executable);
+    }
+
+    fn write_plugin_manifest(storage: &Storage, provider: &str) {
+        let manifest = storage
+            .plugin_version_dir(provider, &Version::new(1, 0, 0))
+            .join(".jolter-plugin.json");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        fs::write(
+            manifest,
+            r#"{"commands":["hello"],"provides":{"tools":{"hello":{"commands":["hello"]}}}}"#,
+        )
+        .unwrap();
+    }
+
+    fn write_plugin_tool(storage: &Storage, provider: &str, tool: &str, command: &str) -> PathBuf {
+        let root = storage.plugin_tool_version_dir(provider, tool, &Version::new(1, 0, 0));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join(".jolter-plugin-tool.json"),
+            format!(r#"{{"commands":["{command}"]}}"#),
+        )
+        .unwrap();
+        let executable = if cfg!(windows) {
+            root.join(format!("{command}.exe"))
+        } else {
+            root.join(command)
+        };
+        fs::write(&executable, b"tool").unwrap();
+        executable
     }
 
     #[test]
