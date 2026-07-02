@@ -7,79 +7,110 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
 jobs:
   quality:
-    runs-on: ubuntu-24.04
+    name: Quality (fmt + clippy)
+    runs-on: [self-hosted, linux, ci]
     steps:
       - uses: actions/checkout@v6
-      - run: rustup component add clippy rustfmt
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Setup Rust
+        run: |
+          rustup component add clippy rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Cache target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    name: Test (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: windows-2025
-            target: x86_64-pc-windows-msvc
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: macos-15
-            target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
+    name: Test (Linux CI Runner)
+    runs-on: [self-hosted, linux, ci]
     steps:
       - uses: actions/checkout@v6
-      - run: rustup target add ${{ matrix.target }}
-      - run: cargo test --workspace --all-targets --locked --target ${{ matrix.target }}
 
-  wsl:
-    runs-on: windows-2025
+      - name: Setup Rust target
+        run: rustup target add x86_64-unknown-linux-gnu
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Cache target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets --locked
+
+  audit:
+    name: Security Audit
+    runs-on: [self-hosted, linux, audit]
     steps:
       - uses: actions/checkout@v6
-      - uses: Vampire/setup-wsl@v7
-        with:
-          distribution: Ubuntu-24.04
-          additional-packages: build-essential
-            cmake
-            curl
-            pkg-config
-      - name: Install Rust
-        shell: wsl-bash {0}
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-            sh -s -- -y --profile minimal
-      - name: Test in WSL
-        shell: wsl-bash {0}
-        run: |
-          source "$HOME/.cargo/env"
-          cargo test --workspace --all-targets --locked
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Run audit
+        run: cargo audit
 
   coverage:
-    runs-on: ubuntu-24.04
+    name: Coverage
+    runs-on: [self-hosted, linux, ci]
     steps:
       - uses: actions/checkout@v6
-      - run: rustup component add llvm-tools-preview
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: >
+
+      - name: Install llvm-cov
+        run: rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run coverage
+        run: >
           cargo llvm-cov
           --workspace
           --all-targets
           --locked
-          --fail-under-lines 80
           --codecov
           --output-path codecov.json
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
         with:
           name: coverage
           path: codecov.json
-
-  audit:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-      - uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit

@@ -15,29 +15,48 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          - os: self-hosted-linux
+            runs-on: [self-hosted, linux, x64, release]
             target: x86_64-unknown-linux-gnu
             archive: tar
+            use_self_hosted: true
+
           - os: ubuntu-24.04-arm
+            runs-on: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar
+
           - os: windows-2025
+            runs-on: windows-2025
             target: x86_64-pc-windows-msvc
             archive: zip
+
           - os: windows-11-arm
+            runs-on: windows-11-arm
             target: aarch64-pc-windows-msvc
             archive: zip
+
           - os: macos-15-intel
+            runs-on: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar
+
           - os: macos-15
+            runs-on: macos-15
             target: aarch64-apple-darwin
             archive: tar
-    runs-on: ${{ matrix.os }}
+
+    runs-on: ${{ matrix.runs-on }}
+
     steps:
       - uses: actions/checkout@v6
-      - run: rustup target add ${{ matrix.target }}
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
       - name: Package Unix artifact
         if: matrix.archive == 'tar'
         shell: bash
@@ -47,11 +66,13 @@ jobs:
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/jolter" README.md LICENSE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
+
           if command -v sha256sum >/dev/null; then
             sha256sum "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
           else
             shasum -a 256 "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
           fi
+
       - name: Package Windows artifact
         if: matrix.archive == 'zip'
         shell: pwsh
@@ -59,11 +80,15 @@ jobs:
           $name = "jolter-$env:GITHUB_REF_NAME-${{ matrix.target }}"
           $directory = Join-Path "dist" $name
           New-Item -ItemType Directory -Force $directory | Out-Null
+
           Copy-Item "target/${{ matrix.target }}/release/jolter.exe", "README.md", "LICENSE" $directory
+
           $archive = "dist/$name.zip"
           Compress-Archive -Path "$directory/*" -DestinationPath $archive
+
           $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
           "$hash  $name.zip" | Set-Content "$archive.sha256"
+
       - uses: actions/upload-artifact@v4
         with:
           name: jolter-${{ matrix.target }}
@@ -76,8 +101,10 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-24.04
+
     permissions:
       contents: write
+
     steps:
       - uses: actions/download-artifact@v4
         with:
