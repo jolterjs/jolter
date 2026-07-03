@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   install-linux-selfhosted:
-    name: Providers (self-hosted Linux)
-    runs-on: [self-hosted, linux, ci]
+    name: Providers (Linux)
+    runs-on: [self-hosted, linux, smoke]
 
     steps:
       - uses: actions/checkout@v6
@@ -25,7 +25,7 @@ jobs:
       - name: Build release
         run: cargo build --release --locked
 
-      - name: Smoke test
+      - name: Smoke test (Linux)
         shell: bash
         run: |
           set -e
@@ -42,7 +42,8 @@ jobs:
 
           cat > "$project/jolter.json" << 'EOF'
 {
-  "schemaVersion": 1,
+  "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
+  "schemaVersion": 2,
   "runtime": { "node": "lts" },
   "tools": { "pnpm": "latest" }
 }
@@ -73,6 +74,42 @@ EOF
       - name: Build release
         run: cargo build --release --locked
 
+      - name: Smoke test (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $exe = Join-Path $PWD "target/release/jolter.exe"
+          $env:JOLTER_HOME = Join-Path $env:RUNNER_TEMP "jolter-home"
+
+          & $exe use node@lts
+          & $exe use bun@latest
+          & $exe use deno@latest
+
+          $project = Join-Path $env:RUNNER_TEMP "jolter-smoke-project"
+          New-Item -ItemType Directory -Force $project | Out-Null
+
+          @'
+{
+  "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
+  "schemaVersion": 2,
+  "runtime": { "node": "lts" },
+  "tools": { "pnpm": "latest" }
+}
+'@ | Set-Content (Join-Path $project "jolter.json")
+
+          Push-Location $project
+          try {
+            & $exe setup-ci --json
+
+            $shim = Join-Path $env:JOLTER_HOME "shims"
+
+            & (Join-Path $shim "node.exe") --version
+            & (Join-Path $shim "pnpm.exe") --version
+          } finally {
+            Pop-Location
+          }
+
   install-macos:
     name: Providers (macOS)
     strategy:
@@ -93,3 +130,36 @@ EOF
 
       - name: Build release
         run: cargo build --release --locked
+
+      - name: Smoke test (macOS)
+        shell: bash
+        run: |
+          set -e
+
+          exe="./target/release/jolter"
+          export JOLTER_HOME="$RUNNER_TEMP/jolter-home"
+
+          "$exe" use node@lts
+          "$exe" use bun@latest
+          "$exe" use deno@latest
+
+          project="$RUNNER_TEMP/jolter-smoke-project"
+          mkdir -p "$project"
+
+          cat > "$project/jolter.json" << 'EOF'
+{
+  "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
+  "schemaVersion": 2,
+  "runtime": { "node": "lts" },
+  "tools": { "pnpm": "latest" }
+}
+EOF
+
+          cd "$project"
+
+          "$exe" setup-ci --json
+
+          shim="$JOLTER_HOME/shims"
+
+          "$shim/node" --version
+          "$shim/pnpm" --version
