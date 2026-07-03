@@ -15,30 +15,17 @@ jobs:
   quality:
     name: Quality (fmt + clippy)
     runs-on: [self-hosted, linux, ci]
+
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup Rust
-        run: |
-          rustup component add clippy rustfmt
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-registry-${{ runner.os }}-
+          components: clippy, rustfmt
 
-      - name: Cache target
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: cargo-target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-target-${{ runner.os }}-
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -49,29 +36,17 @@ jobs:
   test:
     name: Test (Linux CI Runner)
     runs-on: [self-hosted, linux, ci]
+
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup Rust target
-        run: rustup target add x86_64-unknown-linux-gnu
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-registry-${{ runner.os }}-
+          targets: x86_64-unknown-linux-gnu
 
-      - name: Cache target
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: cargo-target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-target-${{ runner.os }}-
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
@@ -79,6 +54,7 @@ jobs:
   audit:
     name: Security Audit
     runs-on: [self-hosted, linux, audit]
+
     steps:
       - uses: actions/checkout@v6
 
@@ -91,23 +67,29 @@ jobs:
   coverage:
     name: Coverage
     runs-on: [self-hosted, linux, ci]
+
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install llvm-cov
-        run: rustup component add llvm-tools-preview
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Run coverage
-        run: >
-          cargo llvm-cov
-          --workspace
-          --all-targets
-          --locked
-          --codecov
-          --output-path codecov.json
+        run: |
+          cargo llvm-cov \
+            --workspace \
+            --all-targets \
+            --locked \
+            --codecov \
+            --output-path codecov.json
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
