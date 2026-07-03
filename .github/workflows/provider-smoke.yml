@@ -31,6 +31,8 @@ jobs:
           set -e
 
           exe="./target/release/jolter"
+          shim_exe="./target/release/jolter-shim"
+          test -x "$shim_exe"
           export JOLTER_HOME="$RUNNER_TEMP/jolter-home"
 
           "$exe" use node@lts
@@ -80,6 +82,8 @@ EOF
           $ErrorActionPreference = "Stop"
 
           $exe = Join-Path $PWD "target/release/jolter.exe"
+          $shimExe = Join-Path $PWD "target/release/jolter-shim.exe"
+          if (-not (Test-Path $shimExe)) { throw "missing jolter-shim.exe" }
           $env:JOLTER_HOME = Join-Path $env:RUNNER_TEMP "jolter-home"
 
           & $exe use node@lts
@@ -137,6 +141,8 @@ EOF
           set -e
 
           exe="./target/release/jolter"
+          shim_exe="./target/release/jolter-shim"
+          test -x "$shim_exe"
           export JOLTER_HOME="$RUNNER_TEMP/jolter-home"
 
           "$exe" use node@lts

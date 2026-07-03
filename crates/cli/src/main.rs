@@ -5,8 +5,9 @@ use std::{
     fs::OpenOptions,
     io::{IsTerminal, Write},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode},
+    process::ExitCode,
     sync::Arc,
+    time::Instant,
 };
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -18,8 +19,6 @@ use jolter_core::{Jolter, PruneOutcome, SyncOutcome};
 use jolter_doctor::CheckStatus;
 use jolter_plugin::PluginRequest;
 use jolter_runtime::{RuntimeKind, RuntimeRequest, ToolKind, ToolRequest};
-use jolter_shim::{resolve_command, target_for_command};
-use jolter_storage::Storage;
 use semver::Version;
 use thiserror::Error;
 
@@ -242,16 +241,6 @@ enum SetupShell {
 }
 
 fn main() -> ExitCode {
-    if let Some(shim) = invoked_shim() {
-        return match run_shim(&shim) {
-            Ok(code) => code,
-            Err(error) => {
-                eprintln!("{shim}: {error}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-
     let cli = Cli::parse();
     let ui = Arc::new(TerminalUi::new(OutputOptions {
         progress: if cli.no_progress {
@@ -277,13 +266,16 @@ fn main() -> ExitCode {
             OutputKind::Human
         },
     }));
-    match run(cli, &ui) {
+    let started = Instant::now();
+    let code = match run(cli, &ui) {
         Ok(code) => code,
         Err(error) => {
             ui.failure(error.to_string());
             ExitCode::FAILURE
         }
-    }
+    };
+    ui.timing(started.elapsed());
+    code
 }
 
 impl Cli {
@@ -1523,83 +1515,39 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 fn install_shims(jolter: &Jolter) -> Result<(), CliError> {
-    let executable = env::current_exe().map_err(CliError::CurrentExecutable)?;
+    let executable = shim_executable()?;
     jolter.install_shims(&executable)?;
     Ok(())
 }
 
-fn invoked_shim() -> Option<String> {
-    let argument = env::args_os().next()?;
-    let name = Path::new(&argument)
-        .file_stem()?
-        .to_string_lossy()
-        .to_ascii_lowercase();
-    (name != "jolter" && (target_for_command(&name).is_some() || !name.is_empty())).then_some(name)
-}
-
-fn run_shim(shim: &str) -> Result<ExitCode, CliError> {
-    let storage = Storage::discover()?;
-    let current_dir = env::current_dir().map_err(CliError::CurrentDirectory)?;
-    let resolved = resolve_command(shim, &current_dir, &storage)?;
-    let mut command = runtime_command(&resolved.executable);
-    command.args(&resolved.arguments);
-    command.args(env::args_os().skip(1));
-    if let (Some(runtime), Some(runtime_root)) = (&resolved.runtime, &resolved.runtime_root) {
-        prepend_runtime_path(&mut command, runtime.kind, runtime_root)?;
+fn shim_executable() -> Result<PathBuf, CliError> {
+    if let Some(path) = env::var_os("JOLTER_SHIM_EXE").filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(CliError::ShimExecutableMissing(path));
     }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let error = command.exec();
-        Err(CliError::Launch {
-            path: resolved.executable,
-            source: error,
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        let status = command.status().map_err(|source| CliError::Launch {
-            path: resolved.executable,
-            source,
-        })?;
-        Ok(status
-            .code()
-            .and_then(|code| u8::try_from(code).ok())
-            .map_or(ExitCode::FAILURE, ExitCode::from))
-    }
-}
-
-fn runtime_command(executable: &Path) -> ProcessCommand {
-    ProcessCommand::new(executable)
-}
-
-fn prepend_runtime_path(
-    command: &mut ProcessCommand,
-    kind: RuntimeKind,
-    runtime_root: &Path,
-) -> Result<(), CliError> {
-    let binary_directory = if kind == RuntimeKind::Node && !cfg!(windows) {
-        runtime_root.join("bin")
+    let current = env::current_exe().map_err(CliError::CurrentExecutable)?;
+    let directory = current
+        .parent()
+        .ok_or_else(|| CliError::ShimExecutableMissing(current.clone()))?;
+    let executable = directory.join(if cfg!(windows) {
+        "jolter-shim.exe"
     } else {
-        runtime_root.to_path_buf()
-    };
-    let mut paths = vec![binary_directory];
-    if let Some(existing) = env::var_os("PATH") {
-        paths.extend(env::split_paths(&existing));
+        "jolter-shim"
+    });
+    if executable.is_file() {
+        Ok(executable)
+    } else {
+        Err(CliError::ShimExecutableMissing(executable))
     }
-    let path = env::join_paths(paths).map_err(CliError::JoinPath)?;
-    command.env("PATH", path);
-    command.env("JOLTER_RUNTIME_ROOT", runtime_root);
-    Ok(())
 }
 
 #[derive(Debug, Error)]
 enum CliError {
     #[error(transparent)]
     Core(#[from] jolter_core::CoreError),
-    #[error(transparent)]
-    Shim(#[from] jolter_shim::ShimError),
     #[error(transparent)]
     Storage(#[from] jolter_storage::StorageError),
     #[error("no active {0} version; pass an explicit selector such as {0}@latest")]
@@ -1624,14 +1572,8 @@ enum CliError {
     CurrentDirectory(#[source] std::io::Error),
     #[error("failed to determine the Jolter executable: {0}")]
     CurrentExecutable(#[source] std::io::Error),
-    #[error("failed to launch {path}: {source}")]
-    Launch {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to construct runtime PATH: {0}")]
-    JoinPath(#[source] env::JoinPathsError),
+    #[error("Jolter shim executable was not found at {0}")]
+    ShimExecutableMissing(PathBuf),
     #[error("failed to serialize command output: {0}")]
     Json(#[source] serde_json::Error),
     #[error("failed to update {variable} file {path}: {source}")]

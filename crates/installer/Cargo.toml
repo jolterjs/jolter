@@ -6,6 +6,10 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "jolter_fetcher"
+path = "src/lib.rs"
+
 [dependencies]
 base64.workspace = true
 flate2.workspace = true

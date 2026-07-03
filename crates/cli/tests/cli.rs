@@ -2,8 +2,27 @@ use std::{fs, process::Command};
 
 fn jolter_command(project: &std::path::Path, home: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_jolter"));
-    command.current_dir(project).env("JOLTER_HOME", home);
     command
+        .current_dir(project)
+        .env("JOLTER_HOME", home)
+        .env("JOLTER_SHIM_EXE", shim_executable());
+    command
+}
+
+fn shim_executable() -> &'static str {
+    env!("CARGO_BIN_EXE_jolter-shim")
+}
+
+fn assert_timing_stderr(stderr: &[u8]) {
+    let stderr = String::from_utf8_lossy(stderr);
+    assert!(
+        stderr.contains("[time]"),
+        "expected timing line in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("total "),
+        "expected total duration in stderr, got: {stderr}"
+    );
 }
 
 fn runtime_executable(home: &std::path::Path, kind: &str, version: &str) -> std::path::PathBuf {
@@ -243,7 +262,7 @@ fn use_activates_an_installed_tool() {
     let list_stdout = String::from_utf8_lossy(&list.stdout);
     assert!(list_stdout.contains("* pnpm@10.2.0"));
     assert!(list_stdout.contains("[ready]"));
-    assert!(list.stderr.is_empty());
+    assert_timing_stderr(&list.stderr);
 }
 
 #[test]
@@ -297,7 +316,7 @@ fn list_reports_managed_tools_and_health() {
     assert!(stdout.contains("yarn@4.1.0"));
     assert!(stdout.contains("[ready]"));
     assert!(stdout.contains("[incomplete]"));
-    assert!(output.stderr.is_empty());
+    assert_timing_stderr(&output.stderr);
 }
 
 #[test]
@@ -339,7 +358,7 @@ fn list_aligns_status_and_path_columns_without_tabs() {
         )
     );
     assert!(!stdout.contains('\t'));
-    assert!(output.stderr.is_empty());
+    assert_timing_stderr(&output.stderr);
 }
 
 #[test]
@@ -414,9 +433,14 @@ fn setup_installs_shims_and_prints_shell_guidance() {
     assert!(stdout.contains("Installed Jolter shims"));
     assert!(stdout.contains("export PATH="));
     #[cfg(windows)]
-    assert!(home.path().join("shims").join("node.exe").is_file());
+    let node_shim = home.path().join("shims").join("node.exe");
     #[cfg(not(windows))]
-    assert!(home.path().join("shims").join("node").is_file());
+    let node_shim = home.path().join("shims").join("node");
+    assert!(node_shim.is_file());
+    assert_eq!(
+        fs::read(&node_shim).unwrap(),
+        fs::read(shim_executable()).unwrap()
+    );
 }
 
 #[test]

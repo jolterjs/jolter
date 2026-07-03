@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 jolter-config = { path = "../config" }
 jolter-doctor = { path = "../doctor" }
-jolter-installer = { path = "../installer" }
+jolter_installer = { package = "jolter-installer", path = "../installer" }
 jolter-plugin = { path = "../plugin" }
 jolter-resolver = { path = "../resolver" }
 jolter-runtime = { path = "../runtime" }

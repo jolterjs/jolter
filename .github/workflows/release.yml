@@ -64,7 +64,12 @@ jobs:
           name="jolter-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "dist/$name"
 
-          cp "target/${{ matrix.target }}/release/jolter" README.md LICENSE "dist/$name/"
+          cp "target/${{ matrix.target }}/release/jolter" \
+            "target/${{ matrix.target }}/release/jolter-shim" \
+            README.md LICENSE "dist/$name/"
+
+          test -x "dist/$name/jolter"
+          test -x "dist/$name/jolter-shim"
 
           tar -C dist -czf "dist/$name.tar.gz" "$name"
 
@@ -78,7 +83,10 @@ jobs:
           $dir = "dist/$name"
           New-Item -ItemType Directory -Force $dir | Out-Null
 
-          Copy-Item "target/${{ matrix.target }}/release/jolter.exe", "README.md", "LICENSE" $dir
+          Copy-Item "target/${{ matrix.target }}/release/jolter.exe", "target/${{ matrix.target }}/release/jolter-shim.exe", "README.md", "LICENSE" $dir
+
+          if (-not (Test-Path (Join-Path $dir "jolter.exe"))) { throw "missing jolter.exe" }
+          if (-not (Test-Path (Join-Path $dir "jolter-shim.exe"))) { throw "missing jolter-shim.exe" }
 
           $zip = "dist/$name.zip"
           Compress-Archive "$dir/*" $zip

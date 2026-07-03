@@ -9,6 +9,16 @@ use jolter_core::{ProgressAction, ProgressEvent, ProgressReporter};
 
 const REDRAW_INTERVAL: Duration = Duration::from_millis(80);
 const SPINNER: [&str; 4] = ["-", "\\", "|", "/"];
+const TIMING_STEPS: [TimingStep; 8] = [
+    TimingStep::Resolve,
+    TimingStep::Download,
+    TimingStep::Install,
+    TimingStep::Activate,
+    TimingStep::Shims,
+    TimingStep::Remove,
+    TimingStep::Clean,
+    TimingStep::Other,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressPreference {
@@ -173,6 +183,23 @@ impl TerminalUi {
             "{} {}",
             self.stdout_tag("note", Color::Dim),
             message.as_ref()
+        ));
+    }
+
+    pub fn timing(&self, total: Duration) {
+        if matches!(self.mode, RenderMode::Quiet | RenderMode::Silent) {
+            return;
+        }
+        self.finish_progress();
+        let line = {
+            let mut state = self.state.lock().unwrap();
+            state.timing.finish_current(Instant::now());
+            format_timing_line(&state.timing, total)
+        };
+        write_stderr_line(&format!(
+            "{} {}",
+            self.stderr_tag("time", Color::Gray),
+            self.stderr_paint(Color::Gray, &line)
         ));
     }
 
@@ -382,6 +409,9 @@ impl ProgressReporter for TerminalUi {
             return;
         }
         let mut state = self.state.lock().unwrap();
+        state
+            .timing
+            .observe(timing_step_for_event(&event), Instant::now());
         match event {
             ProgressEvent::Stage { action, target } => {
                 if self.mode == RenderMode::Interactive {
@@ -433,6 +463,7 @@ struct ProgressState {
     last_draw: Option<Instant>,
     last_plain: Option<String>,
     download: Option<DownloadState>,
+    timing: TimingRecorder,
 }
 
 struct DownloadState {
@@ -449,6 +480,7 @@ enum Color {
     Yellow,
     Cyan,
     Dim,
+    Gray,
 }
 
 impl Color {
@@ -459,8 +491,128 @@ impl Color {
             Self::Yellow => "33",
             Self::Cyan => "36",
             Self::Dim => "2",
+            Self::Gray => "90",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimingStep {
+    Resolve,
+    Download,
+    Install,
+    Activate,
+    Shims,
+    Remove,
+    Clean,
+    Other,
+}
+
+impl TimingStep {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Resolve => "resolve",
+            Self::Download => "download",
+            Self::Install => "install",
+            Self::Activate => "activate",
+            Self::Shims => "shims",
+            Self::Remove => "remove",
+            Self::Clean => "clean",
+            Self::Other => "other",
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Resolve => 0,
+            Self::Download => 1,
+            Self::Install => 2,
+            Self::Activate => 3,
+            Self::Shims => 4,
+            Self::Remove => 5,
+            Self::Clean => 6,
+            Self::Other => 7,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ActiveTimingStep {
+    step: TimingStep,
+    started: Instant,
+}
+
+#[derive(Debug, Default)]
+struct TimingRecorder {
+    totals: [Duration; TIMING_STEPS.len()],
+    active: Option<ActiveTimingStep>,
+}
+
+impl TimingRecorder {
+    fn observe(&mut self, step: TimingStep, now: Instant) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.step == step)
+        {
+            return;
+        }
+        self.finish_current(now);
+        self.active = Some(ActiveTimingStep { step, started: now });
+    }
+
+    fn finish_current(&mut self, now: Instant) {
+        let Some(active) = self.active.take() else {
+            return;
+        };
+        let elapsed = now.saturating_duration_since(active.started);
+        let index = active.step.index();
+        self.totals[index] = self.totals[index].saturating_add(elapsed);
+    }
+
+    fn total_for(&self, step: TimingStep) -> Duration {
+        self.totals[step.index()]
+    }
+}
+
+fn timing_step_for_event(event: &ProgressEvent<'_>) -> TimingStep {
+    match event {
+        ProgressEvent::Stage { action, .. } => timing_step_for_action(*action),
+        ProgressEvent::DownloadStarted { .. }
+        | ProgressEvent::DownloadAdvanced { .. }
+        | ProgressEvent::DownloadFinished { .. } => TimingStep::Download,
+        ProgressEvent::CacheHit { .. } => TimingStep::Resolve,
+    }
+}
+
+const fn timing_step_for_action(action: ProgressAction) -> TimingStep {
+    match action {
+        ProgressAction::Select | ProgressAction::Resolve | ProgressAction::Reuse => {
+            TimingStep::Resolve
+        }
+        ProgressAction::Connect | ProgressAction::Download => TimingStep::Download,
+        ProgressAction::Verify | ProgressAction::Extract | ProgressAction::Publish => {
+            TimingStep::Install
+        }
+        ProgressAction::Activate => TimingStep::Activate,
+        ProgressAction::Shims => TimingStep::Shims,
+        ProgressAction::Remove => TimingStep::Remove,
+        ProgressAction::Clean => TimingStep::Clean,
+        ProgressAction::Diagnose | ProgressAction::Configure => TimingStep::Other,
+    }
+}
+
+fn format_timing_line(timing: &TimingRecorder, total: Duration) -> String {
+    let mut parts = TIMING_STEPS
+        .into_iter()
+        .filter_map(|step| {
+            let elapsed = timing.total_for(step);
+            (elapsed > Duration::ZERO)
+                .then(|| format!("{} {}", step.label(), format_duration(elapsed)))
+        })
+        .collect::<Vec<_>>();
+    parts.push(format!("total {}", format_duration(total)));
+    parts.join(" | ")
 }
 
 fn paint(enabled: bool, color: Color, text: &str) -> String {
@@ -593,20 +745,30 @@ fn rate(bytes: u64, elapsed: Duration) -> u64 {
 }
 
 fn format_duration(duration: Duration) -> String {
-    if duration.as_secs() >= 60 {
-        format!(
-            "{}m{:02}s",
-            duration.as_secs() / 60,
-            duration.as_secs() % 60
-        )
-    } else if duration.as_secs() > 0 {
-        format!(
-            "{}.{:01}s",
-            duration.as_secs(),
-            duration.subsec_millis() / 100
-        )
+    let mut remaining = duration.as_millis();
+    let day = 24 * 60 * 60 * 1000;
+    let hour = 60 * 60 * 1000;
+    let minute = 60 * 1000;
+    let second = 1000;
+    let units = [
+        ("d", day),
+        ("h", hour),
+        ("m", minute),
+        ("s", second),
+        ("ms", 1),
+    ];
+    let mut parts = Vec::new();
+    for (label, unit) in units {
+        let value = remaining / unit;
+        if value > 0 {
+            parts.push(format!("{value}{label}"));
+            remaining %= unit;
+        }
+    }
+    if parts.is_empty() {
+        "0ms".to_owned()
     } else {
-        format!("{}ms", duration.as_millis())
+        parts.join(" ")
     }
 }
 
@@ -654,7 +816,28 @@ mod tests {
         assert_eq!(format_bytes(1536), "1.5 KiB");
         assert_eq!(rate(2048, Duration::from_secs(2)), 1024);
         assert_eq!(format_duration(Duration::from_millis(250)), "250ms");
-        assert_eq!(format_duration(Duration::from_millis(1250)), "1.2s");
+        assert_eq!(format_duration(Duration::from_millis(1250)), "1s 250ms");
+        assert_eq!(
+            format_duration(Duration::from_millis(
+                86_400_000 + 7_200_000 + 180_000 + 4_000 + 5
+            )),
+            "1d 2h 3m 4s 5ms"
+        );
+    }
+
+    #[test]
+    fn aggregates_timing_steps_into_one_line() {
+        let start = Instant::now();
+        let mut timing = TimingRecorder::default();
+        timing.observe(TimingStep::Resolve, start);
+        timing.observe(TimingStep::Download, start + Duration::from_millis(8));
+        timing.observe(TimingStep::Install, start + Duration::from_millis(20));
+        timing.finish_current(start + Duration::from_millis(45));
+
+        assert_eq!(
+            format_timing_line(&timing, Duration::from_millis(50)),
+            "resolve 8ms | download 12ms | install 25ms | total 50ms"
+        );
     }
 
     #[test]

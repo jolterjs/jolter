@@ -749,8 +749,17 @@ fn ensure_https(url: &str) -> Result<(), PluginError> {
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> Result<(), PluginError> {
-    let bytes = fs::read(path).map_err(PluginError::Io)?;
-    let actual = format!("{:x}", Sha256::digest(bytes));
+    let mut file = fs::File::open(path).map_err(PluginError::Io)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 256 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(PluginError::Io)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
     if actual == expected.to_ascii_lowercase() {
         Ok(())
     } else {

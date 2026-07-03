@@ -4,7 +4,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, SystemTime},
 };
@@ -451,7 +451,7 @@ impl HttpClient for ReqwestHttpClient {
         reporter.report(ProgressEvent::DownloadStarted { name, total });
         let mut file = File::create(destination).map_err(InstallerError::Io)?;
         let mut downloaded = 0_u64;
-        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut buffer = vec![0_u8; 256 * 1024];
         loop {
             let read = response.read(&mut buffer).map_err(InstallerError::Io)?;
             if read == 0 {
@@ -471,7 +471,6 @@ impl HttpClient for ReqwestHttpClient {
                 total,
             });
         }
-        file.sync_all().map_err(InstallerError::Io)?;
         reporter.report(ProgressEvent::DownloadFinished {
             name,
             downloaded,
@@ -512,8 +511,28 @@ fn read_text_response(
 pub struct Installer {
     storage: Storage,
     platform: Platform,
-    http: Arc<dyn HttpClient>,
+    http: HttpClientSource,
     reporter: Arc<dyn ProgressReporter>,
+}
+
+enum HttpClientSource {
+    Lazy(Mutex<Option<Arc<dyn HttpClient>>>),
+    Ready(Arc<dyn HttpClient>),
+}
+
+impl HttpClientSource {
+    fn get(&self) -> Result<Arc<dyn HttpClient>, InstallerError> {
+        match self {
+            Self::Lazy(client) => {
+                let mut client = client.lock().unwrap();
+                if client.is_none() {
+                    *client = Some(Arc::new(ReqwestHttpClient::new()?));
+                }
+                Ok(client.as_ref().expect("client initialized above").clone())
+            }
+            Self::Ready(client) => Ok(client.clone()),
+        }
+    }
 }
 
 impl Installer {
@@ -528,7 +547,7 @@ impl Installer {
         Ok(Self {
             storage,
             platform: Platform::current()?,
-            http: Arc::new(ReqwestHttpClient::new()?),
+            http: HttpClientSource::Lazy(Mutex::new(None)),
             reporter,
         })
     }
@@ -548,7 +567,7 @@ impl Installer {
         Self {
             storage,
             platform,
-            http,
+            http: HttpClientSource::Ready(http),
             reporter,
         }
     }
@@ -1241,7 +1260,7 @@ impl Installer {
             .prefix(".jolter-download-")
             .tempfile_in(&directory)
             .map_err(InstallerError::Io)?;
-        self.http.download(
+        self.http.get()?.download(
             &artifact.url,
             temporary.path(),
             &artifact.file_name,
@@ -1294,9 +1313,9 @@ impl Installer {
         }
 
         let response = if npm_metadata {
-            self.http.get_npm_metadata(url)
+            self.http.get()?.get_npm_metadata(url)
         } else {
-            self.http.get_text(url)
+            self.http.get()?.get_text(url)
         };
         match response {
             Ok(contents) => {
@@ -1660,7 +1679,7 @@ pub fn verify_sha256(path: &Path, expected: &str) -> Result<(), InstallerError> 
     validate_checksum(expected)?;
     let mut file = File::open(path).map_err(InstallerError::Io)?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 8 * 1024];
+    let mut buffer = vec![0_u8; 256 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(InstallerError::Io)?;
         if read == 0 {
@@ -1690,7 +1709,7 @@ fn verify_sha512(path: &Path, expected: &str) -> Result<(), InstallerError> {
     }
     let mut file = File::open(path).map_err(InstallerError::Io)?;
     let mut hasher = Sha512::new();
-    let mut buffer = [0_u8; 8 * 1024];
+    let mut buffer = vec![0_u8; 256 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(InstallerError::Io)?;
         if read == 0 {
@@ -1733,7 +1752,7 @@ fn digest_hex<D: Digest>(path: &Path) -> Result<String, InstallerError> {
 
     let mut file = File::open(path).map_err(InstallerError::Io)?;
     let mut hasher = D::new();
-    let mut buffer = [0_u8; 8 * 1024];
+    let mut buffer = vec![0_u8; 256 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(InstallerError::Io)?;
         if read == 0 {

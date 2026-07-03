@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use jolter_config::{CONFIG_FILE_NAME, ProjectConfig, RuntimeConfig};
@@ -27,9 +27,9 @@ pub use jolter_installer::{ProgressAction, ProgressEvent, ProgressReporter};
 
 pub struct Jolter {
     storage: Storage,
-    installer: Installer,
-    plugins: PluginManager,
-    plugin_executor: PluginExecutor,
+    installer: Mutex<Option<Installer>>,
+    plugins: Mutex<Option<PluginManager>>,
+    plugin_executor: Mutex<Option<PluginExecutor>>,
     reporter: Arc<dyn ProgressReporter>,
 }
 
@@ -50,15 +50,11 @@ impl Jolter {
         storage: Storage,
         reporter: Arc<dyn ProgressReporter>,
     ) -> Result<Self, CoreError> {
-        storage.ensure_layout()?;
-        let installer = Installer::new_with_reporter(storage.clone(), reporter.clone())?;
-        let plugins = PluginManager::new(storage.clone())?;
-        let plugin_executor = PluginExecutor::new()?;
         Ok(Self {
             storage,
-            installer,
-            plugins,
-            plugin_executor,
+            installer: Mutex::new(None),
+            plugins: Mutex::new(None),
+            plugin_executor: Mutex::new(None),
             reporter,
         })
     }
@@ -66,6 +62,46 @@ impl Jolter {
     #[must_use]
     pub const fn storage(&self) -> &Storage {
         &self.storage
+    }
+
+    fn with_installer<T>(
+        &self,
+        action: impl FnOnce(&Installer) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let mut installer = self.installer.lock().unwrap();
+        if installer.is_none() {
+            *installer = Some(Installer::new_with_reporter(
+                self.storage.clone(),
+                self.reporter.clone(),
+            )?);
+        }
+        action(installer.as_ref().expect("installer initialized above"))
+    }
+
+    fn with_plugins<T>(
+        &self,
+        action: impl FnOnce(&PluginManager) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let mut plugins = self.plugins.lock().unwrap();
+        if plugins.is_none() {
+            *plugins = Some(PluginManager::new(self.storage.clone())?);
+        }
+        action(plugins.as_ref().expect("plugin manager initialized above"))
+    }
+
+    fn with_plugin_executor<T>(
+        &self,
+        action: impl FnOnce(&PluginExecutor) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let mut executor = self.plugin_executor.lock().unwrap();
+        if executor.is_none() {
+            *executor = Some(PluginExecutor::new()?);
+        }
+        action(
+            executor
+                .as_ref()
+                .expect("plugin executor initialized above"),
+        )
     }
 
     pub fn pin_runtime(&self, project: &Path, request: &RuntimeRequest) -> Result<(), CoreError> {
@@ -202,7 +238,7 @@ impl Jolter {
                 downloaded: false,
             });
         }
-        let outcome = self.installer.install(request)?;
+        let outcome = self.with_installer(|installer| Ok(installer.install(request)?))?;
         let target = format!("{}@{}", outcome.runtime.kind, outcome.runtime.version);
         self.report(ProgressAction::Activate, &target);
         self.storage
@@ -218,8 +254,9 @@ impl Jolter {
             && Version::parse(request.selector.trim_start_matches('v')).is_ok()
             && let Some(tool) = self.storage.find_matching_tool(request)?
         {
-            self.installer
-                .validate_installed_tool(&tool, &node_version)?;
+            self.with_installer(|installer| {
+                Ok(installer.validate_installed_tool(&tool, &node_version)?)
+            })?;
             let target = format!("{}@{}", tool.kind, tool.version);
             self.report(ProgressAction::Reuse, &target);
             self.report(ProgressAction::Activate, &target);
@@ -230,7 +267,8 @@ impl Jolter {
                 downloaded: false,
             });
         }
-        let outcome = self.installer.install_tool(request, &node_version)?;
+        let outcome =
+            self.with_installer(|installer| Ok(installer.install_tool(request, &node_version)?))?;
         let target = format!("{}@{}", outcome.tool.kind, outcome.tool.version);
         self.report(ProgressAction::Activate, &target);
         self.storage
@@ -318,7 +356,7 @@ impl Jolter {
     pub fn install_plugin(&self, request: &PluginRequest) -> Result<PluginAction, CoreError> {
         let target = request.to_string();
         self.report(ProgressAction::Resolve, &target);
-        let plugin = self.plugins.install(request)?;
+        let plugin = self.with_plugins(|plugins| Ok(plugins.install(request)?))?;
         Ok(PluginAction { plugin })
     }
 
@@ -330,7 +368,7 @@ impl Jolter {
         let canonical = if name.starts_with('@') {
             name.to_ascii_lowercase()
         } else {
-            self.plugins.resolve_name(name)?
+            self.with_plugins(|plugins| Ok(plugins.resolve_name(name)?))?
         };
         if !force && self.plugin_commands_in_active_shims(&canonical)? {
             return Err(CoreError::ActivePluginRemoval(canonical));
@@ -365,7 +403,8 @@ impl Jolter {
                 version: version.clone(),
             });
         }
-        let outcome = self.installer.uninstall_runtime(kind, version)?;
+        let outcome =
+            self.with_installer(|installer| Ok(installer.uninstall_runtime(kind, version)?))?;
         if active.as_ref() == Some(version) {
             self.storage.deactivate(kind, Some(version))?;
         }
@@ -387,7 +426,8 @@ impl Jolter {
                 version: version.clone(),
             });
         }
-        let outcome = self.installer.uninstall_tool(kind, version)?;
+        let outcome =
+            self.with_installer(|installer| Ok(installer.uninstall_tool(kind, version)?))?;
         if active.as_ref() == Some(version) {
             self.storage.deactivate_tool(kind, Some(version))?;
         }
@@ -415,9 +455,9 @@ impl Jolter {
                 version: version.clone(),
             });
         }
-        let outcome = self
-            .installer
-            .uninstall_plugin_tool(provider, tool, version)?;
+        let outcome = self.with_installer(|installer| {
+            Ok(installer.uninstall_plugin_tool(provider, tool, version)?)
+        })?;
         if active
             .as_ref()
             .is_some_and(|active| active.provider == provider && active.version == *version)
@@ -493,13 +533,17 @@ impl Jolter {
             let target = format!("{}@{}", item.kind, item.version);
             self.report(ProgressAction::Remove, &target);
             let outcome = match &item.kind {
-                PruneItemKind::Runtime(kind) => {
-                    self.installer.uninstall_runtime(*kind, &item.version)?
+                PruneItemKind::Runtime(kind) => self.with_installer(|installer| {
+                    Ok(installer.uninstall_runtime(*kind, &item.version)?)
+                })?,
+                PruneItemKind::Tool(kind) => self.with_installer(|installer| {
+                    Ok(installer.uninstall_tool(*kind, &item.version)?)
+                })?,
+                PruneItemKind::PluginTool { provider, tool } => {
+                    self.with_installer(|installer| {
+                        Ok(installer.uninstall_plugin_tool(provider, tool, &item.version)?)
+                    })?
                 }
-                PruneItemKind::Tool(kind) => self.installer.uninstall_tool(*kind, &item.version)?,
-                PruneItemKind::PluginTool { provider, tool } => self
-                    .installer
-                    .uninstall_plugin_tool(provider, tool, &item.version)?,
             };
             item.reclaimed_bytes = outcome.reclaimed_bytes;
         }
@@ -616,7 +660,7 @@ impl Jolter {
     pub fn clean_cache(&self) -> Result<CacheCleanOutcome, CoreError> {
         let target = self.storage.cache_dir().display().to_string();
         self.report(ProgressAction::Clean, &target);
-        Ok(self.installer.clean_cache()?)
+        self.with_installer(|installer| Ok(installer.clean_cache()?))
     }
 
     pub fn install_shims(&self, executable: &Path) -> Result<Vec<PathBuf>, CoreError> {
@@ -698,7 +742,7 @@ impl Jolter {
             let canonical = if requirement.name.starts_with('@') {
                 requirement.name.to_ascii_lowercase()
             } else {
-                self.plugins.resolve_name(&requirement.name)?
+                self.with_plugins(|plugins| Ok(plugins.resolve_name(&requirement.name)?))?
             };
             if let Some(plugin) = self
                 .storage
@@ -748,7 +792,10 @@ impl Jolter {
                     if name.starts_with('@') {
                         continue;
                     }
-                    if self.plugins.resolve_name(name).ok().as_deref()
+                    if self
+                        .with_plugins(|plugins| Ok(plugins.resolve_name(name)?))
+                        .ok()
+                        .as_deref()
                         == Some(provider.canonical_name.as_str())
                     {
                         configured.push(provider.clone());
@@ -808,9 +855,9 @@ impl Jolter {
         }
 
         let outcome = if repair {
-            self.installer.repair(request)?
+            self.with_installer(|installer| Ok(installer.repair(request)?))?
         } else {
-            self.installer.install(request)?
+            self.with_installer(|installer| Ok(installer.install(request)?))?
         };
         let target = format!("{}@{}", outcome.runtime.kind, outcome.runtime.version);
         self.report(ProgressAction::Activate, &target);
@@ -829,8 +876,9 @@ impl Jolter {
             if let Some(tool) = self.storage.find_matching_tool(request)? {
                 let target = format!("{}@{}", tool.kind, tool.version);
                 self.report(ProgressAction::Reuse, &target);
-                self.installer
-                    .validate_installed_tool(&tool, node_version)?;
+                self.with_installer(|installer| {
+                    Ok(installer.validate_installed_tool(&tool, node_version)?)
+                })?;
                 return Ok(ToolInstallOutcome {
                     tool,
                     downloaded: false,
@@ -838,9 +886,9 @@ impl Jolter {
             }
         }
         if repair {
-            Ok(self.installer.repair_tool(request, node_version)?)
+            self.with_installer(|installer| Ok(installer.repair_tool(request, node_version)?))
         } else {
-            Ok(self.installer.install_tool(request, node_version)?)
+            self.with_installer(|installer| Ok(installer.install_tool(request, node_version)?))
         }
     }
 
@@ -874,7 +922,8 @@ impl Jolter {
 
         let release = self.resolve_plugin_tool(provider, tool, selector)?;
         let archive = plugin_tool_archive(provider, tool, release)?;
-        let outcome = self.installer.install_plugin_tool(&archive, repair)?;
+        let outcome =
+            self.with_installer(|installer| Ok(installer.install_plugin_tool(&archive, repair)?))?;
         let installed = InstalledPluginTool {
             provider: outcome.provider.clone(),
             tool: outcome.tool.clone(),
@@ -904,12 +953,14 @@ impl Jolter {
             tool, selector, provider.canonical_name, provider.version
         );
         self.report(ProgressAction::Resolve, &target);
-        Ok(self.plugin_executor.resolve_tool(
-            &provider.path.join("plugin.wasm"),
-            tool,
-            selector,
-            current_plugin_platform(),
-        )?)
+        self.with_plugin_executor(|executor| {
+            Ok(executor.resolve_tool(
+                &provider.path.join("plugin.wasm"),
+                tool,
+                selector,
+                current_plugin_platform(),
+            )?)
+        })
     }
 
     fn validate_plugin_tool(
@@ -917,12 +968,14 @@ impl Jolter {
         provider: &InstalledPlugin,
         tool: &InstalledPluginTool,
     ) -> Result<bool, CoreError> {
-        Ok(self.plugin_executor.validate_installed(
-            &provider.path.join("plugin.wasm"),
-            &tool.tool,
-            &tool.version,
-            &tool.path,
-        )?)
+        self.with_plugin_executor(|executor| {
+            Ok(executor.validate_installed(
+                &provider.path.join("plugin.wasm"),
+                &tool.tool,
+                &tool.version,
+                &tool.path,
+            )?)
+        })
     }
 
     fn active_node_version(&self, request: &ToolRequest) -> Result<Version, CoreError> {
