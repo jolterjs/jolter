@@ -14,7 +14,7 @@ env:
 jobs:
   quality:
     name: Quality (fmt + clippy)
-    runs-on: [self-hosted, linux, ci]
+    runs-on: [self-hosted, linux, quality]
 
     steps:
       - uses: actions/checkout@v6
@@ -71,7 +71,7 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on: [self-hosted, linux, ci]
+    runs-on: [self-hosted, linux, coverage]
 
     steps:
       - uses: actions/checkout@v6
