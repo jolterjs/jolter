@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability Reporting
+    url: https://github.com/jolterjs/jolter/security/advisories/new
+    about: Please report security vulnerabilities privately.
+  - name: Jolter Documentation
+    url: https://jolter.dev/docs
+    about: Browse documentation, guides, and reference material for Jolter.

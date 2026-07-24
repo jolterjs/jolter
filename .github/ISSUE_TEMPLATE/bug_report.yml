@@ -1,0 +1,72 @@
+name: Bug Report
+description: Create a report to help us improve Jolter
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please fill out the sections below to help us reproduce and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Provide a clear and concise description of the bug.
+      placeholder: Describe what happened...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Jolter Version
+      description: Run `jolter --version` and paste the output here.
+      placeholder: "jolter 0.1.0-alpha.1"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System & Architecture
+      description: Specify your operating system and architecture (e.g., macOS Sonoma arm64, Ubuntu 24.04 x86_64, Windows 11 x64).
+      placeholder: "Windows 11 x64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Detail the exact steps or commands to reproduce the issue.
+      placeholder: |
+        1. Run `jolter use node@24`
+        2. Execute `jolter exec node --version`
+        3. See error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: Describe what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior / Output
+      description: Include any relevant error output, backtraces, or logs. Use code blocks (` ``` `) to format console output.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Add any other context about the problem (e.g., config files, environment variables like `JOLTER_HOME`).
+    validations:
+      required: false
