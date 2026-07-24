@@ -218,6 +218,7 @@ fn active_tool_for_command(
     Ok(Some(tool))
 }
 
+#[allow(clippy::similar_names)]
 pub fn desired_shim_commands(storage: &Storage) -> Result<BTreeSet<String>, ShimError> {
     let mut commands = BTreeSet::new();
 
@@ -243,24 +244,24 @@ pub fn desired_shim_commands(storage: &Storage) -> Result<BTreeSet<String>, Shim
     }
 
     let tools = storage.installed_tools()?;
-    let has_npm = tools
+    let has_npm_tool = tools
         .iter()
         .any(|tool| tool.kind == ToolKind::Npm && tool.is_complete());
-    let has_pnpm = tools
+    let has_pnpm_tool = tools
         .iter()
         .any(|tool| tool.kind == ToolKind::Pnpm && tool.is_complete());
-    let has_yarn = tools
+    let has_yarn_tool = tools
         .iter()
         .any(|tool| tool.kind == ToolKind::Yarn && tool.is_complete());
 
-    if has_node || has_npm {
+    if has_node || has_npm_tool {
         commands.insert("npm".to_string());
         commands.insert("npx".to_string());
     }
-    if has_pnpm {
+    if has_pnpm_tool {
         commands.insert("pnpm".to_string());
     }
-    if has_yarn {
+    if has_yarn_tool {
         commands.insert("yarn".to_string());
     }
 
