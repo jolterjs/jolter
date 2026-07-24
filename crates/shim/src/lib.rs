@@ -218,6 +218,63 @@ fn active_tool_for_command(
     Ok(Some(tool))
 }
 
+pub fn desired_shim_commands(storage: &Storage) -> Result<BTreeSet<String>, ShimError> {
+    let mut commands = BTreeSet::new();
+
+    let runtimes = storage.installed_runtimes()?;
+    let has_node = runtimes
+        .iter()
+        .any(|runtime| runtime.kind == RuntimeKind::Node && runtime.is_complete());
+    let has_bun = runtimes
+        .iter()
+        .any(|runtime| runtime.kind == RuntimeKind::Bun && runtime.is_complete());
+    let has_deno = runtimes
+        .iter()
+        .any(|runtime| runtime.kind == RuntimeKind::Deno && runtime.is_complete());
+
+    if has_node {
+        commands.insert("node".to_string());
+    }
+    if has_bun {
+        commands.insert("bun".to_string());
+    }
+    if has_deno {
+        commands.insert("deno".to_string());
+    }
+
+    let tools = storage.installed_tools()?;
+    let has_npm = tools
+        .iter()
+        .any(|tool| tool.kind == ToolKind::Npm && tool.is_complete());
+    let has_pnpm = tools
+        .iter()
+        .any(|tool| tool.kind == ToolKind::Pnpm && tool.is_complete());
+    let has_yarn = tools
+        .iter()
+        .any(|tool| tool.kind == ToolKind::Yarn && tool.is_complete());
+
+    if has_node || has_npm {
+        commands.insert("npm".to_string());
+        commands.insert("npx".to_string());
+    }
+    if has_pnpm {
+        commands.insert("pnpm".to_string());
+    }
+    if has_yarn {
+        commands.insert("yarn".to_string());
+    }
+
+    for plugin_tool in storage.installed_plugin_tools()? {
+        if plugin_tool.is_complete() {
+            for command in &plugin_tool.commands {
+                commands.insert(command.clone());
+            }
+        }
+    }
+
+    Ok(commands)
+}
+
 pub fn install_shims(
     source_executable: &Path,
     storage: &Storage,
@@ -228,17 +285,10 @@ pub fn install_shims(
         ));
     }
     storage.ensure_layout()?;
-    let plugin_commands = plugin_shim_commands(storage)?;
-    let mut commands = SHIM_COMMANDS
-        .iter()
-        .map(|command| (*command).to_owned())
-        .chain(plugin_commands)
-        .collect::<Vec<_>>();
-    commands.sort();
-    commands.dedup();
-    let mut installed = Vec::with_capacity(commands.len());
-    for command in commands {
-        let command = command.as_str();
+    let desired = desired_shim_commands(storage)?;
+    let mut installed = Vec::with_capacity(desired.len());
+
+    for command in &desired {
         let file_name = shim_file_name(command);
         let destination = storage.shims_dir().join(&file_name);
         let temporary = storage
@@ -268,6 +318,24 @@ pub fn install_shims(
         })?;
         installed.push(destination);
     }
+
+    if let Ok(entries) = fs::read_dir(storage.shims_dir()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if stem.starts_with('.') {
+                    continue;
+                }
+                if !desired.contains(stem) {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+    }
+
     Ok(installed)
 }
 
@@ -804,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn installs_and_refreshes_every_shim() {
+    fn installs_and_refreshes_shims_demand_driven() {
         let home = tempfile::tempdir().unwrap();
         let storage = Storage::new(home.path());
         let source_dir = tempfile::tempdir().unwrap();
@@ -815,17 +883,58 @@ mod tests {
         });
         fs::write(&source, b"first").unwrap();
 
+        // 1. Fresh storage has no installed runtimes or tools -> 0 shims created
         let installed = install_shims(&source, &storage).unwrap();
-        assert_eq!(installed.len(), SHIM_COMMANDS.len());
-        assert!(installed.iter().all(|path| path.is_file()));
+        assert!(installed.is_empty());
 
-        fs::remove_file(&source).unwrap();
-        fs::write(&source, b"second").unwrap();
-        install_shims(&source, &storage).unwrap();
-        assert_eq!(fs::read(&installed[0]).unwrap(), b"second");
-        assert!(matches!(
-            install_shims(&source_dir.path().join("missing"), &storage),
-            Err(ShimError::SourceExecutableMissing(_))
-        ));
+        // 2. Add Node.js runtime -> node, npm, npx shims created
+        let node_dir = storage.runtime_version_dir(RuntimeKind::Node, &Version::new(24, 0, 0));
+        fs::create_dir_all(&node_dir).unwrap();
+        let node_bin = storage.runtime_executable(RuntimeKind::Node, &Version::new(24, 0, 0));
+        fs::create_dir_all(node_bin.parent().unwrap()).unwrap();
+        fs::write(&node_bin, b"node").unwrap();
+
+        let installed = install_shims(&source, &storage).unwrap();
+        let names = installed
+            .iter()
+            .map(|p| p.file_stem().unwrap().to_str().unwrap().to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            names,
+            BTreeSet::from(["node".to_string(), "npm".to_string(), "npx".to_string()])
+        );
+
+        // 3. Add Bun runtime -> bun shim also created
+        let bun_dir = storage.runtime_version_dir(RuntimeKind::Bun, &Version::new(1, 0, 0));
+        fs::create_dir_all(&bun_dir).unwrap();
+        let bun_bin = storage.runtime_executable(RuntimeKind::Bun, &Version::new(1, 0, 0));
+        fs::create_dir_all(bun_bin.parent().unwrap()).unwrap();
+        fs::write(&bun_bin, b"bun").unwrap();
+
+        let installed = install_shims(&source, &storage).unwrap();
+        let names = installed
+            .iter()
+            .map(|p| p.file_stem().unwrap().to_str().unwrap().to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                "node".to_string(),
+                "npm".to_string(),
+                "npx".to_string(),
+                "bun".to_string()
+            ])
+        );
+
+        // 4. Remove Node.js -> node, npm, npx shims are pruned, only bun remains
+        fs::remove_dir_all(&node_dir).unwrap();
+        let installed = install_shims(&source, &storage).unwrap();
+        let names = installed
+            .iter()
+            .map(|p| p.file_stem().unwrap().to_str().unwrap().to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(names, BTreeSet::from(["bun".to_string()]));
+        assert!(!storage.shims_dir().join("node").exists());
+        assert!(!storage.shims_dir().join("node.exe").exists());
     }
 }

@@ -77,10 +77,8 @@ Malformed fields fail resolution rather than being ignored. Only one tool can
 be represented by this compatibility source; use `jolter.json` for multiple
 tools.
 
-## Automatic Switching
-
-`jolter setup` creates command shims named for supported runtimes and tools.
-When one is invoked, Jolter:
+Command shims are generated demand-driven when runtimes, tools, or plugins are installed.
+When a shimmed command is invoked, Jolter:
 
 1. identifies the command name;
 2. resolves the current project's requirements;

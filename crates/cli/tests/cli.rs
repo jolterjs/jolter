@@ -419,6 +419,15 @@ fn setup_installs_shims_and_prints_shell_guidance() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
 
+    let node_bin = home
+        .path()
+        .join("runtimes")
+        .join("node")
+        .join("24.0.0")
+        .join(if cfg!(windows) { "node.exe" } else { "node" });
+    fs::create_dir_all(node_bin.parent().unwrap()).unwrap();
+    fs::write(&node_bin, b"node").unwrap();
+
     let output = jolter_command(project.path(), home.path())
         .args(["setup", "--shell", "bash"])
         .output()

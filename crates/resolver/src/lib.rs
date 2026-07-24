@@ -153,17 +153,6 @@ fn plugins_from_config(config: &ProjectConfig) -> Vec<ResolvedPlugin> {
         .collect()
 }
 
-fn resolved_tool(
-    name: &str,
-    selector: &str,
-    source: RequirementSource,
-) -> Result<ResolvedTool, ToolRequestError> {
-    Ok(ResolvedTool {
-        request: ToolRequest::new(name.parse()?, selector)?,
-        source,
-    })
-}
-
 fn resolve_node_file(
     start: &Path,
     file_name: &str,
@@ -205,11 +194,13 @@ fn resolve_package_json(start: &Path) -> Result<Option<ResolvedTool>, ResolverEr
     if name.is_empty() || selector.is_empty() {
         return Err(ResolverError::InvalidPackageManager(value.to_owned()));
     }
-    Ok(Some(resolved_tool(
-        name,
-        selector,
-        RequirementSource::PackageJson,
-    )?))
+    let Ok(kind) = name.parse::<jolter_runtime::ToolKind>() else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedTool {
+        request: ToolRequest::new(kind, selector)?,
+        source: RequirementSource::PackageJson,
+    }))
 }
 
 fn find_upward(start: &Path, file_name: &str) -> Option<PathBuf> {
@@ -330,5 +321,37 @@ mod tests {
         let resolution = resolve(temp.path()).unwrap();
 
         assert_eq!(resolution.runtime.unwrap().request.to_string(), "node@24");
+    }
+
+    #[test]
+    fn ignores_unmanaged_package_manager_tools_in_package_json() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{"packageManager":"bun@1.3.14"}"#,
+        )
+        .unwrap();
+
+        let resolution = resolve(temp.path()).unwrap();
+        assert!(resolution.tools.is_empty());
+    }
+
+    #[test]
+    fn jolter_config_with_no_tools_ignores_unmanaged_package_manager() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("jolter.json"),
+            r#"{"runtime":{"node":"24.x"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{"packageManager":"bun@1.3.14"}"#,
+        )
+        .unwrap();
+
+        let resolution = resolve(temp.path()).unwrap();
+        assert_eq!(resolution.runtime.unwrap().request.to_string(), "node@24.x");
+        assert!(resolution.tools.is_empty());
     }
 }

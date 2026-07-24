@@ -13,7 +13,7 @@ jolter setup
 The command:
 
 1. creates the Jolter storage layout if needed;
-2. creates or refreshes supported command shims;
+2. refreshes command shims matching installed runtimes and tools;
 3. checks whether the shims directory is on the current `PATH`;
 4. prints a command for the current session;
 5. prints a persistent user-level command for the selected shell.
@@ -36,16 +36,15 @@ With a custom home:
 $JOLTER_HOME/shims
 ```
 
-Generated shims cover:
+Command shims are created demand-driven when a runtime, tool, or plugin tool is installed (globally or for a project):
 
 ```text
-node
-npm
-npx
-pnpm
-yarn
-bun
-deno
+node, npm, npx  (created when a Node.js runtime or npm tool is installed)
+pnpm            (created when a pnpm tool is installed)
+yarn            (created when a yarn tool is installed)
+bun             (created when a Bun runtime is installed)
+deno            (created when a Deno runtime is installed)
+<plugin-tool>   (created when a plugin tool is installed)
 ```
 
 Platform-specific executable suffixes are handled automatically.

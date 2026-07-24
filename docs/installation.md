@@ -59,7 +59,7 @@ jolter --version
 jolter setup
 ```
 
-`setup` creates Jolter's runtime and tool command shims, then prints exact
+`setup` configures shell PATH integration and refreshes shims matching installed runtimes and tools, then prints exact
 commands for the current shell and persistent user configuration. Apply the
 persistent command, restart the terminal, and run:
 

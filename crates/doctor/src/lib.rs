@@ -620,24 +620,41 @@ fn extract_version(output: &str) -> Option<Version> {
 }
 
 fn shim_check(storage: &Storage) -> Check {
-    let missing = SHIM_COMMANDS
+    let desired = match jolter_shim::desired_shim_commands(storage) {
+        Ok(commands) => commands,
+        Err(error) => {
+            return Check::fail(
+                "shims",
+                format!("failed to evaluate expected shims: {error}"),
+                "run `jolter setup` or reinstall the affected runtimes/tools",
+            );
+        }
+    };
+    let missing = desired
         .iter()
         .filter(|command| !storage.shims_dir().join(shim_file_name(command)).is_file())
-        .copied()
+        .cloned()
         .collect::<Vec<_>>();
     if missing.is_empty() {
-        Check::pass(
-            "shims",
-            format!(
-                "all shims are installed in {}",
-                storage.shims_dir().display()
-            ),
-        )
+        if desired.is_empty() {
+            Check::pass(
+                "shims",
+                "no shims are required yet (install a runtime or tool to create shims)",
+            )
+        } else {
+            Check::pass(
+                "shims",
+                format!(
+                    "all required shims are installed in {}",
+                    storage.shims_dir().display()
+                ),
+            )
+        }
     } else {
         Check::warning(
             "shims",
             format!("missing shims: {}", missing.join(", ")),
-            "run `jolter setup` to recreate all shims",
+            "run `jolter setup` or install the required toolchain to recreate shims",
         )
     }
 }
