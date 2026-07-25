@@ -413,8 +413,15 @@ fn prepend_runtime_path(
 }
 
 fn plugin_shim_commands(storage: &Storage) -> Result<Vec<String>, ShimError> {
+    if !storage.plugins_dir().exists() {
+        return Ok(Vec::new());
+    }
+    let installed = storage.installed_plugins()?;
+    if installed.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut commands = Vec::new();
-    for plugin in storage.installed_plugins()? {
+    for plugin in installed {
         let path = plugin.path.join(".jolter-plugin.json");
         if !path.is_file() {
             continue;
@@ -449,7 +456,14 @@ fn plugin_command_matches_tool(
     command: &str,
     tool: &str,
 ) -> Result<bool, ShimError> {
-    for plugin in storage.installed_plugins()? {
+    if !storage.plugins_dir().exists() {
+        return Ok(false);
+    }
+    let installed = storage.installed_plugins()?;
+    if installed.is_empty() {
+        return Ok(false);
+    }
+    for plugin in installed {
         let path = plugin.path.join(".jolter-plugin.json");
         if !path.is_file() {
             continue;

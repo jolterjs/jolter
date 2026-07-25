@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use jolter_config::{ProjectConfig, discover};
+use jolter_config::ProjectConfig;
 use jolter_runtime::{
     RuntimeKind, RuntimeRequest, RuntimeRequestError, ToolRequest, ToolRequestError,
 };
@@ -60,12 +60,16 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
             path: start.to_path_buf(),
             source,
         })?;
-    let config_path = discover(&start);
-    let config = config_path
+
+    let discovered = discover_project_files(&start);
+
+    let config = discovered
+        .config_path
         .as_deref()
         .map(ProjectConfig::from_path)
         .transpose()?;
-    let project_root = config_path
+    let project_root = discovered
+        .config_path
         .as_deref()
         .and_then(Path::parent)
         .unwrap_or(&start)
@@ -73,15 +77,18 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
 
     let runtime = match config.as_ref().and_then(runtime_from_config).transpose()? {
         Some(runtime) => Some(runtime),
-        None => match resolve_node_file(&start, ".node-version", RequirementSource::NodeVersion)? {
-            Some(runtime) => Some(runtime),
-            None => resolve_node_file(&start, ".nvmrc", RequirementSource::Nvmrc)?,
+        None => match discovered.node_version_path {
+            Some((path, source)) => parse_node_file(&path, source)?,
+            None => None,
         },
     };
 
     let tools = match config.as_ref().map(tools_from_config).transpose()? {
         Some(tools) if !tools.is_empty() => tools,
-        _ => resolve_package_json(&start)?.into_iter().collect(),
+        _ => match discovered.package_json_path {
+            Some(path) => parse_package_json(&path)?.into_iter().collect(),
+            None => Vec::new(),
+        },
     };
     let plugin_tools = config
         .as_ref()
@@ -95,6 +102,53 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
         plugin_tools,
         plugins,
     })
+}
+
+struct DiscoveredFiles {
+    config_path: Option<PathBuf>,
+    node_version_path: Option<(PathBuf, RequirementSource)>,
+    package_json_path: Option<PathBuf>,
+}
+
+fn discover_project_files(start: &Path) -> DiscoveredFiles {
+    let mut config_path = None;
+    let mut node_version_path = None;
+    let mut package_json_path = None;
+
+    for directory in start.ancestors() {
+        if config_path.is_none() {
+            let candidate = directory.join(jolter_config::CONFIG_FILE_NAME);
+            if candidate.is_file() {
+                config_path = Some(candidate);
+            }
+        }
+        if node_version_path.is_none() {
+            let node_ver = directory.join(".node-version");
+            if node_ver.is_file() {
+                node_version_path = Some((node_ver, RequirementSource::NodeVersion));
+            } else {
+                let nvmrc = directory.join(".nvmrc");
+                if nvmrc.is_file() {
+                    node_version_path = Some((nvmrc, RequirementSource::Nvmrc));
+                }
+            }
+        }
+        if package_json_path.is_none() {
+            let pkg = directory.join("package.json");
+            if pkg.is_file() {
+                package_json_path = Some(pkg);
+            }
+        }
+        if config_path.is_some() && node_version_path.is_some() && package_json_path.is_some() {
+            break;
+        }
+    }
+
+    DiscoveredFiles {
+        config_path,
+        node_version_path,
+        package_json_path,
+    }
 }
 
 fn runtime_from_config(
@@ -153,17 +207,13 @@ fn plugins_from_config(config: &ProjectConfig) -> Vec<ResolvedPlugin> {
         .collect()
 }
 
-fn resolve_node_file(
-    start: &Path,
-    file_name: &str,
+fn parse_node_file(
+    path: &Path,
     source: RequirementSource,
 ) -> Result<Option<ResolvedRuntime>, ResolverError> {
-    let Some(path) = find_upward(start, file_name) else {
-        return Ok(None);
-    };
-    let selector = fs::read_to_string(&path)
+    let selector = fs::read_to_string(path)
         .map_err(|error| ResolverError::Read {
-            path: path.clone(),
+            path: path.to_path_buf(),
             source: error,
         })?
         .trim()
@@ -172,17 +222,14 @@ fn resolve_node_file(
     Ok(Some(ResolvedRuntime { request, source }))
 }
 
-fn resolve_package_json(start: &Path) -> Result<Option<ResolvedTool>, ResolverError> {
-    let Some(path) = find_upward(start, "package.json") else {
-        return Ok(None);
-    };
-    let contents = fs::read_to_string(&path).map_err(|source| ResolverError::Read {
-        path: path.clone(),
+fn parse_package_json(path: &Path) -> Result<Option<ResolvedTool>, ResolverError> {
+    let contents = fs::read_to_string(path).map_err(|source| ResolverError::Read {
+        path: path.to_path_buf(),
         source,
     })?;
     let package: Value =
         serde_json::from_str(&contents).map_err(|source| ResolverError::PackageJson {
-            path: path.clone(),
+            path: path.to_path_buf(),
             source,
         })?;
     let Some(value) = package.get("packageManager").and_then(Value::as_str) else {
@@ -201,13 +248,6 @@ fn resolve_package_json(start: &Path) -> Result<Option<ResolvedTool>, ResolverEr
         request: ToolRequest::new(kind, selector)?,
         source: RequirementSource::PackageJson,
     }))
-}
-
-fn find_upward(start: &Path, file_name: &str) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .map(|directory| directory.join(file_name))
-        .find(|candidate| candidate.is_file())
 }
 
 #[derive(Debug, Error)]

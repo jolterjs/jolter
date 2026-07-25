@@ -51,5 +51,8 @@ missing_panics_doc = "allow"
 
 [profile.release]
 codegen-units = 1
-lto = "thin"
+lto = true
+panic = "abort"
 strip = "symbols"
+opt-level = 3
+

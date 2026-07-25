@@ -367,41 +367,51 @@ impl Storage {
             }))
     }
 
-    pub fn installed_runtimes(&self) -> Result<Vec<InstalledRuntime>, StorageError> {
+    pub fn installed_runtimes_for_kind(
+        &self,
+        kind: RuntimeKind,
+    ) -> Result<Vec<InstalledRuntime>, StorageError> {
         let mut installed = Vec::new();
-        for kind in RuntimeKind::ALL {
-            let directory = self.runtime_dir(kind);
-            if !directory.exists() {
-                continue;
-            }
-            let entries = fs::read_dir(&directory).map_err(|source| StorageError::Read {
+        let directory = self.runtime_dir(kind);
+        if !directory.exists() {
+            return Ok(installed);
+        }
+        let entries = fs::read_dir(&directory).map_err(|source| StorageError::Read {
+            path: directory.clone(),
+            source,
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|source| StorageError::Read {
                 path: directory.clone(),
                 source,
             })?;
-            for entry in entries {
-                let entry = entry.map_err(|source| StorageError::Read {
-                    path: directory.clone(),
+            if !entry
+                .file_type()
+                .map_err(|source| StorageError::Read {
+                    path: entry.path(),
                     source,
-                })?;
-                if !entry
-                    .file_type()
-                    .map_err(|source| StorageError::Read {
-                        path: entry.path(),
-                        source,
-                    })?
-                    .is_dir()
-                {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if let Ok(version) = Version::parse(name.trim_start_matches('v')) {
-                    installed.push(InstalledRuntime {
-                        kind,
-                        version,
-                        path: entry.path(),
-                    });
-                }
+                })?
+                .is_dir()
+            {
+                continue;
             }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Ok(version) = Version::parse(name.trim_start_matches('v')) {
+                installed.push(InstalledRuntime {
+                    kind,
+                    version,
+                    path: entry.path(),
+                });
+            }
+        }
+        installed.sort_by(|left, right| left.version.cmp(&right.version));
+        Ok(installed)
+    }
+
+    pub fn installed_runtimes(&self) -> Result<Vec<InstalledRuntime>, StorageError> {
+        let mut installed = Vec::new();
+        for kind in RuntimeKind::ALL {
+            installed.extend(self.installed_runtimes_for_kind(kind)?);
         }
         installed.sort_by(|left, right| {
             left.kind
@@ -415,52 +425,74 @@ impl Storage {
         &self,
         request: &jolter_runtime::RuntimeRequest,
     ) -> Result<Option<InstalledRuntime>, StorageError> {
+        if let Ok(version) = Version::parse(request.selector.trim_start_matches('v')) {
+            let candidate_dir = self.runtime_version_dir(request.kind, &version);
+            if candidate_dir.is_dir()
+                && runtime_executable_in(&candidate_dir, request.kind).is_file()
+            {
+                return Ok(Some(InstalledRuntime {
+                    kind: request.kind,
+                    version,
+                    path: candidate_dir,
+                }));
+            }
+        }
+
         Ok(self
-            .installed_runtimes()?
+            .installed_runtimes_for_kind(request.kind)?
             .into_iter()
             .rev()
             .find(|runtime| {
-                runtime.kind == request.kind
-                    && request.matches_version(&runtime.version)
+                request.matches_version(&runtime.version)
                     && runtime_executable_in(&runtime.path, runtime.kind).is_file()
             }))
+    }
+
+    pub fn installed_tools_for_kind(
+        &self,
+        kind: ToolKind,
+    ) -> Result<Vec<InstalledTool>, StorageError> {
+        let mut installed = Vec::new();
+        let directory = self.tool_dir(kind);
+        if !directory.exists() {
+            return Ok(installed);
+        }
+        let entries = fs::read_dir(&directory).map_err(|source| StorageError::Read {
+            path: directory.clone(),
+            source,
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|source| StorageError::Read {
+                path: directory.clone(),
+                source,
+            })?;
+            if !entry
+                .file_type()
+                .map_err(|source| StorageError::Read {
+                    path: entry.path(),
+                    source,
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Ok(version) = Version::parse(name.trim_start_matches('v')) {
+                installed.push(InstalledTool {
+                    kind,
+                    version,
+                    path: entry.path(),
+                });
+            }
+        }
+        installed.sort_by(|left, right| left.version.cmp(&right.version));
+        Ok(installed)
     }
 
     pub fn installed_tools(&self) -> Result<Vec<InstalledTool>, StorageError> {
         let mut installed = Vec::new();
         for kind in ToolKind::ALL {
-            let directory = self.tool_dir(kind);
-            if !directory.exists() {
-                continue;
-            }
-            let entries = fs::read_dir(&directory).map_err(|source| StorageError::Read {
-                path: directory.clone(),
-                source,
-            })?;
-            for entry in entries {
-                let entry = entry.map_err(|source| StorageError::Read {
-                    path: directory.clone(),
-                    source,
-                })?;
-                if !entry
-                    .file_type()
-                    .map_err(|source| StorageError::Read {
-                        path: entry.path(),
-                        source,
-                    })?
-                    .is_dir()
-                {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if let Ok(version) = Version::parse(name.trim_start_matches('v')) {
-                    installed.push(InstalledTool {
-                        kind,
-                        version,
-                        path: entry.path(),
-                    });
-                }
-            }
+            installed.extend(self.installed_tools_for_kind(kind)?);
         }
         installed.sort_by(|left, right| {
             left.kind
@@ -474,13 +506,31 @@ impl Storage {
         &self,
         request: &ToolRequest,
     ) -> Result<Option<InstalledTool>, StorageError> {
-        Ok(self.installed_tools()?.into_iter().rev().find(|tool| {
-            tool.kind == request.kind
-                && request.matches_version(&tool.version)
+        if let Ok(version) = Version::parse(request.selector.trim_start_matches('v')) {
+            let candidate_dir = self.tool_version_dir(request.kind, &version);
+            if candidate_dir.is_dir()
                 && self
-                    .tool_entrypoint(tool.kind, &tool.version, &tool.kind.to_string())
+                    .tool_entrypoint(request.kind, &version, &request.kind.to_string())
                     .is_some_and(|entrypoint| entrypoint.is_file())
-        }))
+            {
+                return Ok(Some(InstalledTool {
+                    kind: request.kind,
+                    version,
+                    path: candidate_dir,
+                }));
+            }
+        }
+
+        Ok(self
+            .installed_tools_for_kind(request.kind)?
+            .into_iter()
+            .rev()
+            .find(|tool| {
+                request.matches_version(&tool.version)
+                    && self
+                        .tool_entrypoint(tool.kind, &tool.version, &tool.kind.to_string())
+                        .is_some_and(|entrypoint| entrypoint.is_file())
+            }))
     }
 
     pub fn activate(&self, kind: RuntimeKind, version: &Version) -> Result<(), StorageError> {

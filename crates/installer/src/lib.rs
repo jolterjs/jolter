@@ -1,8 +1,8 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, BufReader, BufWriter, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
@@ -1816,10 +1816,12 @@ fn extract_zip(
     strip_components: usize,
 ) -> Result<(), InstallerError> {
     let file = File::open(archive).map_err(InstallerError::Io)?;
-    let mut zip = zip::ZipArchive::new(file).map_err(InstallerError::Zip)?;
+    let reader = BufReader::with_capacity(128 * 1024, file);
+    let mut zip = zip::ZipArchive::new(reader).map_err(InstallerError::Zip)?;
     if zip.len() > MAX_ARCHIVE_ENTRIES {
         return Err(InstallerError::ArchiveEntryLimit);
     }
+    let mut created_dirs: HashSet<PathBuf> = HashSet::new();
     let mut extracted = 0_u64;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index).map_err(InstallerError::Zip)?;
@@ -1843,14 +1845,20 @@ fn extract_zip(
         let output = destination.join(relative);
         ensure_safe_parent(destination, &output)?;
         if entry.is_dir() {
-            fs::create_dir_all(&output).map_err(InstallerError::Io)?;
+            if created_dirs.insert(output.clone()) {
+                fs::create_dir_all(&output).map_err(InstallerError::Io)?;
+            }
             continue;
         }
         if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).map_err(InstallerError::Io)?;
+            if created_dirs.insert(parent.to_path_buf()) {
+                fs::create_dir_all(parent).map_err(InstallerError::Io)?;
+            }
         }
-        let mut output_file = File::create(&output).map_err(InstallerError::Io)?;
-        io::copy(&mut entry, &mut output_file).map_err(InstallerError::Io)?;
+        let output_file = File::create(&output).map_err(InstallerError::Io)?;
+        let mut writer = BufWriter::with_capacity(64 * 1024, output_file);
+        io::copy(&mut entry, &mut writer).map_err(InstallerError::Io)?;
+        writer.flush().map_err(InstallerError::Io)?;
         #[cfg(unix)]
         if let Some(mode) = entry.unix_mode() {
             set_mode(&output, mode)?;
@@ -1865,8 +1873,10 @@ fn extract_tar_gz(
     strip_components: usize,
 ) -> Result<(), InstallerError> {
     let file = File::open(archive).map_err(InstallerError::Io)?;
-    let decoder = GzDecoder::new(file);
+    let reader = BufReader::with_capacity(128 * 1024, file);
+    let decoder = GzDecoder::new(reader);
     let mut tar = tar::Archive::new(decoder);
+    let mut created_dirs: HashSet<PathBuf> = HashSet::new();
     let mut extracted = 0_u64;
     let mut entries = 0_usize;
     for entry in tar.entries().map_err(InstallerError::Io)? {
@@ -1884,7 +1894,9 @@ fn extract_tar_gz(
         let entry_type = entry.header().entry_type();
 
         if entry_type.is_dir() {
-            fs::create_dir_all(&output).map_err(InstallerError::Io)?;
+            if created_dirs.insert(output.clone()) {
+                fs::create_dir_all(&output).map_err(InstallerError::Io)?;
+            }
         } else if entry_type.is_file() {
             let size = entry.header().size().map_err(InstallerError::Io)?;
             extracted = extracted
@@ -1894,10 +1906,14 @@ fn extract_tar_gz(
                 return Err(InstallerError::ArchiveSizeLimit);
             }
             if let Some(parent) = output.parent() {
-                fs::create_dir_all(parent).map_err(InstallerError::Io)?;
+                if created_dirs.insert(parent.to_path_buf()) {
+                    fs::create_dir_all(parent).map_err(InstallerError::Io)?;
+                }
             }
-            let mut output_file = File::create(&output).map_err(InstallerError::Io)?;
-            io::copy(&mut entry, &mut output_file).map_err(InstallerError::Io)?;
+            let output_file = File::create(&output).map_err(InstallerError::Io)?;
+            let mut writer = BufWriter::with_capacity(64 * 1024, output_file);
+            io::copy(&mut entry, &mut writer).map_err(InstallerError::Io)?;
+            writer.flush().map_err(InstallerError::Io)?;
             #[cfg(unix)]
             set_mode(&output, entry.header().mode().map_err(InstallerError::Io)?)?;
         } else if entry_type.is_symlink() {
