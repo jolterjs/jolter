@@ -695,6 +695,7 @@ fn run_uninstall(
             (format!("{name} via {provider}"), version, outcome)
         }
     };
+    install_shims(jolter)?;
     ui.success(format!(
         "Uninstalled {name}@{version} from {} ({})",
         outcome.path.display(),
@@ -711,6 +712,9 @@ fn run_prune(
     ui: &TerminalUi,
 ) -> Result<ExitCode, CliError> {
     let outcome = jolter.prune(project, keep, dry_run)?;
+    if !dry_run {
+        install_shims(jolter)?;
+    }
     print_prune_outcome(&outcome, ui);
     Ok(ExitCode::SUCCESS)
 }

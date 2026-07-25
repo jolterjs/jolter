@@ -538,6 +538,38 @@ fn uninstall_refuses_an_active_runtime_without_force() {
 }
 
 #[test]
+fn uninstall_removes_shim_when_no_versions_remain() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("jolter.json"),
+        r#"{"runtime":{"bun":"1.3.14"}}"#,
+    )
+    .unwrap();
+    let executable = runtime_executable(home.path(), "bun", "1.3.14");
+    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    fs::write(&executable, b"bun").unwrap();
+
+    let shim_name = if cfg!(windows) { "bun.exe" } else { "bun" };
+    let shim_path = home.path().join("shims").join(shim_name);
+
+    let sync = jolter_command(project.path(), home.path())
+        .arg("sync")
+        .output()
+        .unwrap();
+    assert!(sync.status.success());
+    assert!(shim_path.is_file());
+
+    let forced = jolter_command(project.path(), home.path())
+        .args(["uninstall", "bun@1.3.14", "--force"])
+        .output()
+        .unwrap();
+    assert!(forced.status.success());
+    assert!(!executable.exists());
+    assert!(!shim_path.exists());
+}
+
+#[test]
 fn prune_dry_run_preserves_files_and_then_removes_old_versions() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();

@@ -339,6 +339,7 @@ impl ReqwestHttpClient {
     pub fn new() -> Result<Self, InstallerError> {
         let client = Client::builder()
             .user_agent(concat!("jolter/", env!("CARGO_PKG_VERSION")))
+            .tcp_nodelay(true)
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(30 * 60))
             .redirect(Policy::custom(https_redirect_policy))
@@ -449,7 +450,8 @@ impl HttpClient for ReqwestHttpClient {
             });
         }
         reporter.report(ProgressEvent::DownloadStarted { name, total });
-        let mut file = File::create(destination).map_err(InstallerError::Io)?;
+        let file = File::create(destination).map_err(InstallerError::Io)?;
+        let mut writer = BufWriter::with_capacity(256 * 1024, file);
         let mut downloaded = 0_u64;
         let mut buffer = vec![0_u8; 256 * 1024];
         loop {
@@ -463,7 +465,8 @@ impl HttpClient for ReqwestHttpClient {
                     url: url.to_owned(),
                 });
             }
-            file.write_all(&buffer[..read])
+            writer
+                .write_all(&buffer[..read])
                 .map_err(InstallerError::Io)?;
             reporter.report(ProgressEvent::DownloadAdvanced {
                 name,
@@ -471,6 +474,7 @@ impl HttpClient for ReqwestHttpClient {
                 total,
             });
         }
+        writer.flush().map_err(InstallerError::Io)?;
         reporter.report(ProgressEvent::DownloadFinished {
             name,
             downloaded,
@@ -591,6 +595,50 @@ impl Installer {
     pub fn resolve_tool(&self, request: &ToolRequest) -> Result<ToolRelease, InstallerError> {
         let package_name = request.kind.registry_package();
         let encoded_name = package_name.replace('@', "%40").replace('/', "%2F");
+
+        let single_spec = if request.selector.eq_ignore_ascii_case("latest") {
+            Some("latest")
+        } else if Version::parse(&request.selector).is_ok() {
+            Some(request.selector.as_str())
+        } else {
+            None
+        };
+
+        if let Some(spec) = single_spec {
+            let single_url = format!("https://registry.npmjs.org/{encoded_name}/{spec}");
+            if let Ok(contents) = self.npm_metadata_text(&single_url) {
+                if let Ok(selected) = serde_json::from_str::<NpmVersionMetadata>(&contents) {
+                    if let Ok(version) = Version::parse(&selected.version) {
+                        if let Ok(artifact_url) = Url::parse(&selected.dist.tarball) {
+                            if let Some(file_name) = artifact_url
+                                .path_segments()
+                                .and_then(Iterator::last)
+                                .filter(|name| !name.is_empty())
+                            {
+                                if let Ok(integrity) =
+                                    ArtifactIntegrity::from_sri(&selected.dist.integrity)
+                                {
+                                    return Ok(ToolRelease {
+                                        kind: request.kind,
+                                        version,
+                                        artifact: Artifact {
+                                            url: selected.dist.tarball,
+                                            integrity,
+                                            file_name: file_name.to_owned(),
+                                            format: ArchiveFormat::TarGz,
+                                            strip_components: 1,
+                                        },
+                                        node_engine: selected.engines.node,
+                                        expected_hash: request.hash.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let url = format!("https://registry.npmjs.org/{encoded_name}");
         let contents = self.npm_metadata_text(&url)?;
         let metadata: NpmPackageMetadata =
@@ -1060,13 +1108,38 @@ impl Installer {
     }
 
     fn resolve_node(&self, request: &RuntimeRequest) -> Result<Release, InstallerError> {
+        let target = node_target(self.platform);
+        if let Ok(version) = Version::parse(&request.selector) {
+            let tagged_version = format!("v{version}");
+            let file_name = format!(
+                "node-{tagged_version}-{}.{}",
+                target.archive_name,
+                target.format.cache_extension()
+            );
+            let sums_url = format!("https://nodejs.org/dist/{tagged_version}/SHASUMS256.txt");
+            if let Ok(sums) = self.metadata_text(&sums_url) {
+                if let Ok(sha256) = checksum_for(&sums, &file_name) {
+                    return Ok(Release {
+                        kind: RuntimeKind::Node,
+                        version,
+                        artifact: Artifact {
+                            url: format!("https://nodejs.org/dist/{tagged_version}/{file_name}"),
+                            integrity: ArtifactIntegrity::Sha256(sha256),
+                            file_name,
+                            format: target.format,
+                            strip_components: 1,
+                        },
+                    });
+                }
+            }
+        }
+
         let contents = self.metadata_text(NODE_INDEX_URL)?;
         let index: Vec<NodeRelease> =
             serde_json::from_str(&contents).map_err(|source| InstallerError::MetadataJson {
                 url: NODE_INDEX_URL.to_owned(),
                 source,
             })?;
-        let target = node_target(self.platform);
         let mut candidates = index
             .into_iter()
             .filter_map(|release| {
@@ -1110,6 +1183,67 @@ impl Installer {
         runtime: GithubRuntime,
     ) -> Result<Release, InstallerError> {
         let asset_name = runtime.asset_name(self.platform)?;
+
+        let direct_url = if request.selector.eq_ignore_ascii_case("latest") {
+            Some(format!(
+                "{GITHUB_API}/repos/{}/releases/latest",
+                runtime.repository()
+            ))
+        } else if let Ok(parsed_ver) = Version::parse(&request.selector) {
+            let tag = match runtime {
+                GithubRuntime::Bun => format!("bun-v{parsed_ver}"),
+                GithubRuntime::Deno => format!("v{parsed_ver}"),
+            };
+            Some(format!(
+                "{GITHUB_API}/repos/{}/releases/tags/{tag}",
+                runtime.repository()
+            ))
+        } else {
+            None
+        };
+
+        if let Some(url) = direct_url {
+            if let Ok(contents) = self.metadata_text(&url) {
+                if let Ok(release) = serde_json::from_str::<GithubRelease>(&contents) {
+                    if !release.draft && !release.prerelease {
+                        if let Some(version) = runtime.parse_tag(&release.tag_name) {
+                            if request.matches_release(&version, false) {
+                                if let Some(asset) = release
+                                    .assets
+                                    .iter()
+                                    .find(|asset| asset.name == asset_name)
+                                {
+                                    let sha_res = match asset
+                                        .digest
+                                        .as_deref()
+                                        .and_then(parse_github_digest)
+                                    {
+                                        Some(checksum) => Ok(checksum),
+                                        None => {
+                                            runtime.fallback_checksum(self, &release, asset, &asset_name)
+                                        }
+                                    };
+                                    if let Ok(sha256) = sha_res {
+                                        return Ok(Release {
+                                            kind: runtime.kind(),
+                                            version,
+                                            artifact: Artifact {
+                                                url: asset.browser_download_url.clone(),
+                                                integrity: ArtifactIntegrity::Sha256(sha256),
+                                                file_name: asset_name,
+                                                format: ArchiveFormat::Zip,
+                                                strip_components: runtime.strip_components(),
+                                            },
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         for page in 1..=10 {
             let url = format!(
                 "{GITHUB_API}/repos/{}/releases?per_page=100&page={page}",
@@ -2772,6 +2906,7 @@ mod tests {
         let checksum = format!("{:x}", Sha256::digest(&archive));
         let download_url = format!("https://example.test/{asset_name}");
         let metadata_url = format!("{GITHUB_API}/repos/denoland/deno/releases?per_page=100&page=1");
+        let tag_url = format!("{GITHUB_API}/repos/denoland/deno/releases/tags/v2.8.3");
         let metadata = serde_json::json!([{
             "tag_name": "v2.8.3",
             "draft": false,
@@ -2783,8 +2918,22 @@ mod tests {
             }]
         }])
         .to_string();
+        let single_metadata = serde_json::json!({
+            "tag_name": "v2.8.3",
+            "draft": false,
+            "prerelease": false,
+            "assets": [{
+                "name": asset_name.clone(),
+                "browser_download_url": download_url.clone(),
+                "digest": format!("sha256:{checksum}")
+            }]
+        })
+        .to_string();
         let client = Arc::new(FakeHttpClient {
-            text: HashMap::from([(metadata_url, metadata)]),
+            text: HashMap::from([
+                (metadata_url, metadata),
+                (tag_url, single_metadata),
+            ]),
             downloads: HashMap::from([(download_url, archive)]),
             text_count: Mutex::new(0),
             download_count: Mutex::new(0),
@@ -2804,7 +2953,7 @@ mod tests {
             .unwrap();
         let repaired = installer.repair(&"deno@2.8.3".parse().unwrap()).unwrap();
         assert!(repaired.downloaded);
-        assert_eq!(*client.text_count.lock().unwrap(), 1);
+        assert_eq!(*client.text_count.lock().unwrap(), 2);
         assert_eq!(*client.download_count.lock().unwrap(), 1);
     }
 
