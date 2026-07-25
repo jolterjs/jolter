@@ -75,6 +75,16 @@ jobs:
 
           sha256sum "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
 
+      - name: Code Sign Windows Binaries
+        if: matrix.archive == 'zip' && secrets.WINDOWS_CODESIGN_CERTIFICATE_BASE64 != ''
+        shell: pwsh
+        run: |
+          $certBytes = [System.Convert]::FromBase64String("${{ secrets.WINDOWS_CODESIGN_CERTIFICATE_BASE64 }}")
+          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+          $cert.Import($certBytes, "${{ secrets.WINDOWS_CODESIGN_CERTIFICATE_PASSWORD }}", [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+          Set-AuthenticodeSignature -FilePath "target/${{ matrix.target }}/release/jolter.exe" -Certificate $cert -TimestampServer "http://timestamp.digicert.com"
+          Set-AuthenticodeSignature -FilePath "target/${{ matrix.target }}/release/jolter-shim.exe" -Certificate $cert -TimestampServer "http://timestamp.digicert.com"
+
       - name: Package Windows artifact
         if: matrix.archive == 'zip'
         shell: pwsh
