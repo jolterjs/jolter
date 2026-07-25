@@ -29,6 +29,7 @@ semver.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+jolter-resolver = { path = "../resolver" }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]

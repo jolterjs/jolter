@@ -10,6 +10,105 @@ use jolter_runtime::{
 use serde_json::Value;
 use thiserror::Error;
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DevEngines {
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_one_or_many"
+    )]
+    pub runtime: Vec<DevEngineItem>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_one_or_many"
+    )]
+    pub package_manager: Vec<DevEngineItem>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_one_or_many"
+    )]
+    pub cpu: Vec<DevEngineItem>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_one_or_many"
+    )]
+    pub os: Vec<DevEngineItem>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_one_or_many"
+    )]
+    pub libc: Vec<DevEngineItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevEngineItem {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_fail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevEngineOnFail {
+    Error,
+    Warn,
+    Ignore,
+    Download,
+}
+
+impl DevEngineItem {
+    pub fn parsed_name_and_selector(&self) -> (String, Option<String>) {
+        if let Some((name, selector)) = self.name.rsplit_once('@') {
+            if !name.is_empty() && !selector.is_empty() {
+                return (name.to_owned(), Some(selector.to_owned()));
+            }
+        }
+        (self.name.clone(), self.version.clone())
+    }
+
+    pub fn on_fail_mode(&self) -> DevEngineOnFail {
+        match self
+            .on_fail
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("warn") => DevEngineOnFail::Warn,
+            Some("ignore") => DevEngineOnFail::Ignore,
+            Some("download") => DevEngineOnFail::Download,
+            _ => DevEngineOnFail::Error,
+        }
+    }
+}
+
+fn deserialize_one_or_many<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany<T> {
+        One(T),
+        Many(Vec<T>),
+    }
+
+    Option::<OneOrMany<T>>::deserialize(deserializer).map(|opt| match opt {
+        Some(OneOrMany::One(val)) => vec![val],
+        Some(OneOrMany::Many(vec)) => vec,
+        None => Vec::new(),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectResolution {
     pub root: PathBuf,
@@ -17,6 +116,7 @@ pub struct ProjectResolution {
     pub tools: Vec<ResolvedTool>,
     pub plugin_tools: Vec<ResolvedPluginTool>,
     pub plugins: Vec<ResolvedPlugin>,
+    pub dev_engines: Option<DevEngines>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,20 +175,22 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
         .unwrap_or(&start)
         .to_path_buf();
 
+    let (pkg_runtime, pkg_tools, dev_engines) = match discovered.package_json_path.as_deref() {
+        Some(path) => parse_package_json(path)?,
+        None => (None, Vec::new(), None),
+    };
+
     let runtime = match config.as_ref().and_then(runtime_from_config).transpose()? {
         Some(runtime) => Some(runtime),
         None => match discovered.node_version_path {
             Some((path, source)) => parse_node_file(&path, source)?,
-            None => None,
+            None => pkg_runtime,
         },
     };
 
     let tools = match config.as_ref().map(tools_from_config).transpose()? {
         Some(tools) if !tools.is_empty() => tools,
-        _ => match discovered.package_json_path {
-            Some(path) => parse_package_json(&path)?.into_iter().collect(),
-            None => Vec::new(),
-        },
+        _ => pkg_tools,
     };
     let plugin_tools = config
         .as_ref()
@@ -101,6 +203,7 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
         tools,
         plugin_tools,
         plugins,
+        dev_engines,
     })
 }
 
@@ -222,32 +325,132 @@ fn parse_node_file(
     Ok(Some(ResolvedRuntime { request, source }))
 }
 
-fn parse_package_json(path: &Path) -> Result<Option<ResolvedTool>, ResolverError> {
+fn normalize_dev_engine_selector(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "*" {
+        return "*".to_owned();
+    }
+    if trimmed.eq_ignore_ascii_case("latest") {
+        return "latest".to_owned();
+    }
+    if trimmed.eq_ignore_ascii_case("lts") {
+        return "lts".to_owned();
+    }
+
+    let first_clause = trimmed.split("||").next().unwrap_or(trimmed).trim();
+    let cleaned = first_clause
+        .trim_start_matches('^')
+        .trim_start_matches('~')
+        .trim_start_matches(">=")
+        .trim_start_matches("<=")
+        .trim_start_matches('>')
+        .trim_start_matches('<')
+        .trim_start_matches('=')
+        .trim_start_matches('v')
+        .trim();
+
+    let token = cleaned.split_whitespace().next().unwrap_or(cleaned);
+    let valid_selector: String = token
+        .chars()
+        .take_while(|c| {
+            c.is_ascii_alphanumeric()
+                || *c == '.'
+                || *c == 'x'
+                || *c == 'X'
+                || *c == '*'
+                || *c == '+'
+                || *c == '-'
+        })
+        .collect();
+
+    if valid_selector.is_empty() {
+        "*".to_owned()
+    } else {
+        valid_selector
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ParsedPackageJson {
+    #[serde(default)]
+    dev_engines: Option<DevEngines>,
+    #[serde(default)]
+    package_manager: Option<Value>,
+}
+
+fn parse_package_json(
+    path: &Path,
+) -> Result<
+    (
+        Option<ResolvedRuntime>,
+        Vec<ResolvedTool>,
+        Option<DevEngines>,
+    ),
+    ResolverError,
+> {
     let contents = fs::read_to_string(path).map_err(|source| ResolverError::Read {
         path: path.to_path_buf(),
         source,
     })?;
-    let package: Value =
+    let parsed: ParsedPackageJson =
         serde_json::from_str(&contents).map_err(|source| ResolverError::PackageJson {
             path: path.to_path_buf(),
             source,
         })?;
-    let Some(value) = package.get("packageManager").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let Some((name, selector)) = value.rsplit_once('@') else {
-        return Err(ResolverError::InvalidPackageManager(value.to_owned()));
-    };
-    if name.is_empty() || selector.is_empty() {
-        return Err(ResolverError::InvalidPackageManager(value.to_owned()));
+
+    let mut resolved_runtime = None;
+    let mut resolved_tools = Vec::new();
+
+    if let Some(dev_engines) = &parsed.dev_engines {
+        for item in &dev_engines.runtime {
+            let (name, selector) = item.parsed_name_and_selector();
+            if let Ok(kind) = name.parse::<RuntimeKind>() {
+                let sel =
+                    selector.map_or_else(|| "*".to_owned(), |s| normalize_dev_engine_selector(&s));
+                if let Ok(request) = RuntimeRequest::new(kind, sel) {
+                    resolved_runtime = Some(ResolvedRuntime {
+                        request,
+                        source: RequirementSource::PackageJson,
+                    });
+                    break;
+                }
+            }
+        }
+
+        for item in &dev_engines.package_manager {
+            let (name, selector) = item.parsed_name_and_selector();
+            if let Ok(kind) = name.parse::<jolter_runtime::ToolKind>() {
+                let sel =
+                    selector.map_or_else(|| "*".to_owned(), |s| normalize_dev_engine_selector(&s));
+                if let Ok(request) = ToolRequest::new(kind, sel) {
+                    resolved_tools.push(ResolvedTool {
+                        request,
+                        source: RequirementSource::PackageJson,
+                    });
+                }
+            }
+        }
     }
-    let Ok(kind) = name.parse::<jolter_runtime::ToolKind>() else {
-        return Ok(None);
-    };
-    Ok(Some(ResolvedTool {
-        request: ToolRequest::new(kind, selector)?,
-        source: RequirementSource::PackageJson,
-    }))
+
+    if resolved_tools.is_empty() {
+        if let Some(value) = parsed.package_manager.as_ref().and_then(Value::as_str) {
+            let Some((name, selector)) = value.rsplit_once('@') else {
+                return Err(ResolverError::InvalidPackageManager(value.to_owned()));
+            };
+            if name.is_empty() || selector.is_empty() {
+                return Err(ResolverError::InvalidPackageManager(value.to_owned()));
+            }
+            if let Ok(kind) = name.parse::<jolter_runtime::ToolKind>() {
+                resolved_tools.push(ResolvedTool {
+                    request: ToolRequest::new(kind, selector)?,
+                    source: RequirementSource::PackageJson,
+                });
+            }
+        }
+    }
+
+    Ok((resolved_runtime, resolved_tools, parsed.dev_engines))
 }
 
 #[derive(Debug, Error)]
@@ -313,6 +516,76 @@ mod tests {
         let resolution = resolve(temp.path()).unwrap();
         assert_eq!(resolution.runtime.unwrap().request.to_string(), "node@22");
         assert_eq!(resolution.tools[0].request.to_string(), "pnpm@10.12.1");
+    }
+
+    #[test]
+    fn resolves_dev_engines_runtime_and_package_manager() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{
+                "devEngines": {
+                    "runtime": { "name": "node", "version": "^20.0.0", "onFail": "error" },
+                    "packageManager": { "name": "pnpm", "version": "^11.17.0", "onFail": "download" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resolution = resolve(temp.path()).unwrap();
+        let runtime = resolution.runtime.unwrap();
+        assert_eq!(runtime.request.to_string(), "node@20.0.0");
+        assert_eq!(runtime.source, RequirementSource::PackageJson);
+
+        assert_eq!(resolution.tools.len(), 1);
+        assert_eq!(resolution.tools[0].request.to_string(), "pnpm@11.17.0");
+        assert_eq!(resolution.tools[0].source, RequirementSource::PackageJson);
+
+        let dev_engines = resolution.dev_engines.unwrap();
+        assert_eq!(dev_engines.runtime.len(), 1);
+        assert_eq!(
+            dev_engines.runtime[0].on_fail_mode(),
+            DevEngineOnFail::Error
+        );
+        assert_eq!(dev_engines.package_manager.len(), 1);
+        assert_eq!(
+            dev_engines.package_manager[0].on_fail_mode(),
+            DevEngineOnFail::Download
+        );
+    }
+
+    #[test]
+    fn resolves_dev_engines_array_and_cpu_os() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{
+                "devEngines": {
+                    "runtime": [{ "name": "node", "version": "22.0.0" }],
+                    "packageManager": [
+                        { "name": "pnpm", "version": "10.12.1" },
+                        { "name": "yarn", "version": "4.0.0" }
+                    ],
+                    "cpu": { "name": "x64" },
+                    "os": [{ "name": "darwin" }, { "name": "linux" }, { "name": "win32" }]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resolution = resolve(temp.path()).unwrap();
+        assert_eq!(
+            resolution.runtime.unwrap().request.to_string(),
+            "node@22.0.0"
+        );
+        assert_eq!(resolution.tools.len(), 2);
+        assert_eq!(resolution.tools[0].request.to_string(), "pnpm@10.12.1");
+        assert_eq!(resolution.tools[1].request.to_string(), "yarn@4.0.0");
+
+        let dev_engines = resolution.dev_engines.unwrap();
+        assert_eq!(dev_engines.cpu.len(), 1);
+        assert_eq!(dev_engines.cpu[0].name, "x64");
+        assert_eq!(dev_engines.os.len(), 3);
     }
 
     #[test]
@@ -393,5 +666,27 @@ mod tests {
         let resolution = resolve(temp.path()).unwrap();
         assert_eq!(resolution.runtime.unwrap().request.to_string(), "node@24.x");
         assert!(resolution.tools.is_empty());
+    }
+
+    #[test]
+    fn resolves_dev_engines_semver_range_expression() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{
+                "devEngines": {
+                    "runtime": { "name": "node", "version": "^20.0.0 || >=22.0.0" },
+                    "packageManager": { "name": "pnpm", "version": "^10.0.0" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resolution = resolve(temp.path()).unwrap();
+        assert_eq!(
+            resolution.runtime.unwrap().request.to_string(),
+            "node@20.0.0"
+        );
+        assert_eq!(resolution.tools[0].request.to_string(), "pnpm@10.0.0");
     }
 }

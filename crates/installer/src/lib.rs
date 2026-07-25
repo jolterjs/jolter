@@ -1208,21 +1208,20 @@ impl Installer {
                     if !release.draft && !release.prerelease {
                         if let Some(version) = runtime.parse_tag(&release.tag_name) {
                             if request.matches_release(&version, false) {
-                                if let Some(asset) = release
-                                    .assets
-                                    .iter()
-                                    .find(|asset| asset.name == asset_name)
+                                if let Some(asset) =
+                                    release.assets.iter().find(|asset| asset.name == asset_name)
                                 {
-                                    let sha_res = match asset
-                                        .digest
-                                        .as_deref()
-                                        .and_then(parse_github_digest)
-                                    {
-                                        Some(checksum) => Ok(checksum),
-                                        None => {
-                                            runtime.fallback_checksum(self, &release, asset, &asset_name)
-                                        }
-                                    };
+                                    let sha_res =
+                                        match asset.digest.as_deref().and_then(parse_github_digest)
+                                        {
+                                            Some(checksum) => Ok(checksum),
+                                            None => runtime.fallback_checksum(
+                                                self,
+                                                &release,
+                                                asset,
+                                                &asset_name,
+                                            ),
+                                        };
                                     if let Ok(sha256) = sha_res {
                                         return Ok(Release {
                                             kind: runtime.kind(),
@@ -2930,10 +2929,7 @@ mod tests {
         })
         .to_string();
         let client = Arc::new(FakeHttpClient {
-            text: HashMap::from([
-                (metadata_url, metadata),
-                (tag_url, single_metadata),
-            ]),
+            text: HashMap::from([(metadata_url, metadata), (tag_url, single_metadata)]),
             downloads: HashMap::from([(download_url, archive)]),
             text_count: Mutex::new(0),
             download_count: Mutex::new(0),

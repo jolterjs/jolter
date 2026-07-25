@@ -10,12 +10,13 @@ Runtime sources are considered in this order:
 1. the nearest ancestor `jolter.json` containing a runtime;
 2. the nearest ancestor `.node-version`;
 3. the nearest ancestor `.nvmrc`;
-4. the globally active runtime for direct shim execution.
+4. the nearest ancestor `package.json#devEngines.runtime`;
+5. the globally active runtime for direct shim execution.
 
 The source type has priority. For example, any discovered `.node-version` wins
 over `.nvmrc`, even if the `.nvmrc` is closer to the current directory.
 
-`sync`, `repair`, and `setup-ci` require a project runtime from the first three
+`sync`, `repair`, and `setup-ci` require a project runtime from the first four
 sources. They do not treat a global activation as a project declaration.
 
 ## Tool Precedence
@@ -23,11 +24,12 @@ sources. They do not treat a global activation as a project declaration.
 Tool sources are considered in this order:
 
 1. the `tools` map in the discovered `jolter.json`, when it is non-empty;
-2. the standard string-valued `package.json#packageManager` field;
-3. the globally active tool for direct shim execution;
-4. bundled npm or npx from the selected Node.js runtime when applicable.
+2. `package.json#devEngines.packageManager`;
+3. standard string-valued `package.json#packageManager` field;
+4. the globally active tool for direct shim execution;
+5. bundled npm or npx from the selected Node.js runtime when applicable.
 
-When `jolter.json` declares any tools, `package.json#packageManager` is not
+When `jolter.json` declares any tools, `package.json` compatibility fields are not
 merged with them. Put every intended managed tool in the `tools` map.
 
 ## File Discovery
@@ -54,10 +56,28 @@ results. Without a Jolter configuration, the command's starting directory is
 used as the operational root while compatibility files are still discovered
 upward.
 
-## `package.json#packageManager`
+## `package.json#devEngines` and `packageManager`
 
-The compatibility field must be a string containing a supported tool and
-selector:
+Jolter provides first-class support for `devEngines` in `package.json`:
+
+```json
+{
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "^20.0.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.17.0",
+      "onFail": "download"
+    }
+  }
+}
+```
+
+Legacy string-valued `packageManager` compatibility fields are also accepted:
 
 ```json
 {

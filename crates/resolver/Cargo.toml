@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 jolter-config = { path = "../config" }
 jolter-runtime = { path = "../runtime" }
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 

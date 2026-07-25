@@ -1151,6 +1151,7 @@ dependencies = [
  "jolter-core",
  "jolter-doctor",
  "jolter-plugin",
+ "jolter-resolver",
  "jolter-runtime",
  "jolter-shim",
  "jolter-storage",
@@ -1249,6 +1250,7 @@ version = "0.2.0"
 dependencies = [
  "jolter-config",
  "jolter-runtime",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",

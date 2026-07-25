@@ -199,7 +199,18 @@ fn active_tool_for_command(
     else {
         return Ok(None);
     };
-    let Some(version) = storage.active_tool_version(kind)? else {
+    let version = match storage.active_tool_version(kind)? {
+        Some(v) => Some(v),
+        None => {
+            let tools = storage.installed_tools()?;
+            tools
+                .into_iter()
+                .filter(|t| t.kind == kind && t.is_complete())
+                .max_by(|a, b| a.version.cmp(&b.version))
+                .map(|t| t.version)
+        }
+    };
+    let Some(version) = version else {
         return Ok(None);
     };
     let path = storage.tool_version_dir(kind, &version);
@@ -307,16 +318,26 @@ pub fn install_shims(
                 source,
             })?;
         }
+        let mut replace_failed = false;
         if destination.exists() {
-            fs::remove_file(&destination).map_err(|source| ShimError::Write {
-                path: destination.clone(),
-                source,
-            })?;
+            if fs::remove_file(&destination).is_err() {
+                replace_failed = true;
+            }
         }
-        fs::rename(&temporary, &destination).map_err(|source| ShimError::Write {
-            path: destination.clone(),
-            source,
-        })?;
+        if !replace_failed {
+            if let Err(source) = fs::rename(&temporary, &destination) {
+                if destination.exists() {
+                    let _ = fs::remove_file(&temporary);
+                } else {
+                    return Err(ShimError::Write {
+                        path: destination.clone(),
+                        source,
+                    });
+                }
+            }
+        } else {
+            let _ = fs::remove_file(&temporary);
+        }
         installed.push(destination);
     }
 
@@ -520,9 +541,20 @@ struct PluginShimTool {
 }
 
 fn active_runtime(storage: &Storage, kind: RuntimeKind) -> Result<InstalledRuntime, ShimError> {
-    let version = storage
-        .active_version(kind)?
-        .ok_or(ShimError::NoActiveRuntime(kind))?;
+    let version = match storage.active_version(kind)? {
+        Some(v) => v,
+        None => {
+            let installed = storage.installed_runtimes()?;
+            let highest = installed
+                .into_iter()
+                .filter(|r| r.kind == kind && r.is_complete())
+                .max_by(|a, b| a.version.cmp(&b.version));
+            match highest {
+                Some(r) => r.version,
+                None => return Err(ShimError::NoActiveRuntime(kind)),
+            }
+        }
+    };
     let path = storage.runtime_version_dir(kind, &version);
     let executable = storage.runtime_executable(kind, &version);
     if !executable.is_file() {

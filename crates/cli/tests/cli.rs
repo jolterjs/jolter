@@ -910,3 +910,33 @@ fn human_doctor_prints_remediation_actions() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("action: run `jolter sync`"));
 }
+
+#[test]
+fn doctor_and_sync_with_dev_engines() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("package.json"),
+        r#"{
+            "devEngines": {
+                "runtime": { "name": "node", "version": "24", "onFail": "error" },
+                "packageManager": { "name": "pnpm", "version": "10", "onFail": "download" }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let output = jolter_command(project.path(), home.path())
+        .arg("doctor")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("action: run `jolter sync`"));
+
+    let resolution = jolter_resolver::resolve(project.path()).unwrap();
+    assert_eq!(resolution.runtime.unwrap().request.to_string(), "node@24");
+    assert_eq!(resolution.tools[0].request.to_string(), "pnpm@10");
+    assert!(resolution.dev_engines.is_some());
+}
