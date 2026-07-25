@@ -1,32 +1,24 @@
 # Jolter Roadmap
 
-Last updated: June 13, 2026
+Last updated: July 25, 2026
 
-This roadmap translates the goals in [`spec.md`](spec.md) into an implementation
-plan and records the repository's current development state. It is intended to
-be the source of truth for project status, sequencing, and release readiness.
+This roadmap is the implementation plan and records the repository's
+current development state. It is intended to be the source of truth 
+for project status, sequencing, and release readiness.
 
 ## Project Position
 
-Current version: `0.2.0`
+Current version: `0.2.0` (`0.3.0` release-candidate preparation)
 
 Current maturity: **beta / release-candidate preparation**
 
-Current phase: **stable-core implementation complete; hosted release
-validation is in progress**
+Current phase: **stable-core implementation complete; WASM plugin system, development toolkit, and hosted plugin registry operational; release validation in progress**
 
 Jolter can currently resolve, securely install, activate, pin, synchronize,
 repair, and dispatch JavaScript runtimes. It can also manually activate or
-project-pin npm, pnpm, and Yarn versions. The main architecture described by
-the specification exists as a Rust workspace and the essential end-to-end
-workflow is functional.
+project-pin npm, pnpm, and Yarn versions, as well as third-party custom tools provided by WebAssembly (WASM) plugins. The main architecture exists as a 10-crate Rust workspace, supported by a full developer toolkit (`@jolter/jdt`), a hosted plugin registry API, a catalog Web UI, and automated release publication workflows.
 
-Jolter now includes the stable-core command surface, multiple pinned tools,
-active-version updates, deeper diagnostics, storage lifecycle commands, CI
-setup, release workflows, and measured coverage above the specification
-target. It remains pre-1.0 until the configured native, WSL, provider-smoke,
-audit, and release workflows have passed through a release-candidate period.
-Additional tool providers and plugins remain explicitly post-stable work.
+Jolter includes the stable-core command surface, Schema v2 project configuration, multiple pinned tools and plugins, active-version updates, WASM component sandboxing (`wasmtime`), deeper diagnostics, storage lifecycle commands, CI setup, release workflows, and measured test coverage above the target. Additional tool providers and plugin host architecture have progressed from future goals to fully implemented features.
 
 ## Status Legend
 
@@ -40,7 +32,7 @@ Additional tool providers and plugins remain explicitly post-stable work.
 
 ### Runtime Management
 
-Status: **Complete for the alpha core**
+Status: **Complete for the core engine**
 
 - Node.js, Bun, and Deno runtime kinds.
 - Numeric selectors such as `node@24`, `bun@1.3`, and `deno@2`.
@@ -57,11 +49,11 @@ Status: **Complete for the alpha core**
 
 ### Secure Installation
 
-Status: **Complete for current providers**
+Status: **Complete for runtimes, tools, and plugins**
 
 - HTTPS-only metadata and artifact requests.
 - HTTPS-only redirect policy.
-- SHA-256 verification for Node.js, Bun, and Deno artifacts.
+- SHA-256 verification for Node.js, Bun, Deno, and WASM plugin binaries.
 - SHA-512 Subresource Integrity verification for npm registry packages.
 - Optional Corepack descriptor hash verification in addition to registry SRI.
 - Bounded metadata, archive, entry-count, and extracted-size handling.
@@ -73,51 +65,51 @@ Status: **Complete for current providers**
 - Cached release metadata with offline fallback.
 - `JOLTER_OFFLINE=1` support.
 - No downloaded executable is run during installation.
-- Installation manifests for runtimes and managed tools.
+- Installation manifests for runtimes, managed tools, and WASM plugins.
 
-### Tool Management
+### Tool & Plugin Management
 
-Status: **Complete for npm, pnpm, and Yarn alpha workflows**
+Status: **Complete for built-in tools (npm, pnpm, Yarn) and WASM plugins**
 
-- `jolter.json` tool requirements.
+- `jolter.json` tool and plugin requirements (Schema Version 2).
 - `package.json#packageManager` discovery.
 - npm installation from the official npm registry package.
 - pnpm installation from the official npm registry package.
 - Yarn installation from the official `@yarnpkg/cli-dist` package.
-- Numeric, wildcard, and `latest` selectors.
+- Custom tool provision via WASM plugins hosted on the Jolter Registry or local store.
+- Numeric, wildcard, and `latest` selectors for tools and plugins.
 - Exact Corepack-style descriptors with SHA-1 and SHA-2 hashes.
 - Highest matching stable version selection.
-- npm-style Node.js engine compatibility validation before installation and
-  local reuse.
-- Verified, cached, atomic installation under `~/.jolter/tools/`.
-- Project-aware dispatch through the `npm`, `npx`, `pnpm`, and `yarn` shims.
-- Manual installation and global activation through `jolter use`.
-- Exact active tool persistence and inventory markers.
-- Multi-tool synchronization and repair.
-- Doctor checks for matching managed installations.
+- npm-style Node.js engine compatibility validation before installation and local reuse.
+- Verified, cached, atomic installation under `~/.jolter/tools/` and `~/.jolter/plugins/`.
+- Project-aware dispatch through `npm`, `npx`, `pnpm`, `yarn`, and plugin tool shims.
+- Manual installation and global activation through `jolter use` and `jolter plugin install`.
+- Exact active tool and plugin persistence and inventory markers.
+- Multi-tool and plugin synchronization and repair (`jolter sync --yes`).
+- Doctor checks for matching managed installations and WASM plugin integrity.
 
 Known limitations:
 
 - npm registry selection is currently fixed to the public official registry.
-- Tool version execution is probed by `doctor`; Jolter also validates
-  the exact managed installation selected from verified metadata.
-- Bun's bundled package manager is available through the Bun runtime, but it is not a
-  separately versioned managed tool.
+- Tool version execution is probed by `doctor`; Jolter also validates the exact managed installation selected from verified metadata.
+- Bun's bundled package manager is available through the Bun runtime, but it is not a separately versioned managed tool.
 
 ### Project Configuration
 
-Status: **Complete for the current schema**
+Status: **Complete for Schema Version 2**
 
 - Strict `jolter.json` parsing with unknown-field rejection.
-- Atomic configuration writes.
+- Atomic configuration writes using temporary files.
+- Support for Schema Version 2 (`https://schemas.jolter.dev/project/v2/schema.json`).
 - One runtime requirement per project.
-- One runtime and multiple tool requirements per project.
+- Runtime, tool, and plugin requirements per project.
 - Runtime and tool pinning through `jolter pin`.
-- Pinning preserves unrelated runtime and tool requirements.
+- Plugin pinning through `jolter pin` and `jolter plugin install`.
+- Pinning preserves unrelated runtime, tool, and plugin requirements.
 - Legacy `packageManager` input compatibility with canonical `tools` output.
 - Configuration discovery from nested project directories.
 
-Current schema:
+Current schema (v2):
 
 ```json
 {
@@ -127,15 +119,19 @@ Current schema:
     "node": "24.x"
   },
   "tools": {
+    "eslint": "8.x",
     "pnpm": "10.x",
     "yarn": "4.x"
+  },
+  "plugins": {
+    "eslint": "1.x"
   }
 }
 ```
 
 ### Requirement Resolution
 
-Status: **Complete for specified alpha sources**
+Status: **Complete**
 
 Runtime priority:
 
@@ -143,73 +139,60 @@ Runtime priority:
 2. `.node-version`
 3. `.nvmrc`
 
-Tool priority:
+Tool & Plugin priority:
 
 1. `jolter.json`
 2. `package.json#packageManager`
 
-Runtime and tool requirements are resolved independently, allowing a
-project to combine a Node version file with a tool declaration in
-`package.json`.
+Runtime, tool, and plugin requirements are resolved independently, allowing a project to combine a Node version file with tool declarations and WASM plugins in `jolter.json`.
 
 ### Commands
 
 | Command                           | Status                         | Current behavior                                                                                                                    |
 | --------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `jolter use <tool>`               | Complete                       | Installs or reuses a runtime or tool, activates it, and installs shims. Tools require active Node.js.                               |
-| `jolter pin <runtime-or-tool>`    | Complete                       | Writes a runtime or tool requirement to `jolter.json` while preserving other entries.                                               |
+| `jolter use <tool>`               | Complete                       | Installs or reuses a runtime, tool, or plugin tool, activates it, and installs shims. Tools require active Node.js.                 |
+| `jolter pin <runtime-or-tool>`    | Complete                       | Writes a runtime, tool, or plugin tool requirement to `jolter.json` while preserving other entries.                                  |
 | `jolter update [target]`          | Complete                       | Updates an active runtime or tool within its major line, accepts explicit selectors, and supports `--all`.                          |
+| `jolter plugin install <target>`  | Complete                       | Resolves, downloads, verifies SHA-256 integrity, and installs a WASM plugin globally from the Jolter Registry.                     |
+| `jolter plugin list [--json]`     | Complete                       | Lists installed WASM plugins, canonical names, versions, paths, and status in table or JSON format.                                 |
+| `jolter plugin update [name]`     | Complete                       | Updates installed WASM plugins to their highest matching version selectors, supporting single targets or `--all`.                   |
+| `jolter plugin remove <name>`     | Complete                       | Safely removes an installed WASM plugin with active shim protection.                                                                |
 | `jolter setup`                    | Complete                       | Installs shims and prints exact current-session and persistent `PATH` commands for PowerShell, Command Prompt, Bash, Zsh, and Fish. |
-| `jolter list`                     | Complete for current artifacts | Lists runtimes and managed tools, active markers, paths, and readiness.                                                             |
-| `jolter doctor`                   | Complete for stable core       | Probes versions, validates manifests and compatibility, detects conflicts, and emits remediation in text or JSON.                   |
-| `jolter repair`                   | Complete for current artifacts | Reinstalls incomplete runtime and tool installations.                                                                               |
-| `jolter sync`                     | Complete for current schema    | Makes the runtime and tool match project requirements.                                                                              |
+| `jolter list`                     | Complete for current artifacts | Lists runtimes, managed tools, and installed plugins, active markers, paths, and readiness.                                         |
+| `jolter doctor`                   | Complete for stable core       | Probes versions, validates manifests, WASM component integrity, engine compatibility, detects conflicts, and emits JSON/text.     |
+| `jolter repair`                   | Complete for current artifacts | Reinstalls incomplete runtime, tool, and plugin installations (`--yes` auto-installs missing plugins).                               |
+| `jolter sync`                     | Complete for current schema    | Synchronizes project runtimes, tools, and plugins (`--yes` auto-installs missing plugins).                                          |
 | `jolter uninstall <tool@version>` | Complete                       | Removes exact versions with active-toolchain protection and shared installer locks.                                                 |
 | `jolter prune`                    | Complete                       | Preserves active, project-required, and configured newest versions; supports dry runs.                                              |
 | `jolter cache status/clean`       | Complete                       | Inspects and safely cleans metadata and artifact caches.                                                                            |
-| `jolter setup-ci`                 | Complete                       | Synchronizes exact versions, reports cache/shim paths, emits JSON, and integrates with GitHub Actions outputs.                      |
+| `jolter setup-ci`                 | Complete                       | Synchronizes exact versions (`--yes` for plugins), reports cache/shim paths, emits JSON and GitHub Actions outputs.                 |
 | `jolter completions`              | Complete                       | Generates Bash, Zsh, Fish, Elvish, and PowerShell completions.                                                                      |
 
 ### Automatic Switching and Shims
 
 Status: **Complete for invocation-time switching**
 
-- Self-shims for `node`, `npm`, `npx`, `pnpm`, `yarn`, `bun`, and `deno`.
-- Runtime selection is evaluated whenever a shim runs.
-- Project requirements override globally active runtime and tool
-  versions.
-- Managed tool entry points run through the selected Node.js
-  runtime.
-- No shell hook is required for command switching after the shims directory is
-  on `PATH`.
+- Self-shims for `node`, `npm`, `npx`, `pnpm`, `yarn`, `bun`, `deno`, and custom plugin-provided tools.
+- Runtime and plugin tool selection is evaluated whenever a shim runs.
+- Project requirements override globally active runtime, tool, and plugin versions.
+- Managed tool entry points run through the selected Node.js runtime.
+- Plugin tools execute in an isolated WASM sandbox managed by Wasmtime.
+- No shell hook is required for command switching after the shims directory is on `PATH`.
 - `jolter setup` refreshes shims and prints shell-specific `PATH` commands.
 - Automatic setup shell detection supports PowerShell, Bash, Zsh, and Fish.
-- Explicit setup guidance is available for Command Prompt.
-
-Release validation:
-
-- execute the configured shell and WSL jobs on GitHub-hosted runners;
-- observe real user environments with multiple version managers installed.
 
 ### Terminal Output
 
-Status: **Complete for stable-core commands**
+Status: **Complete**
 
 - Distinct `[jolter]`, `[done]`, `[warn]`, and `[fail]` output vocabulary.
-- Single-line interactive progress for runtime and tool downloads.
-- Current resolve, connect, fetch, verify, unpack, install, activate, remove,
-  clean, configure, doctor, and shim actions.
+- Single-line interactive progress for runtime, tool, and plugin downloads.
+- Current resolve, connect, fetch, verify, unpack, install, activate, remove, clean, configure, doctor, and shim actions.
 - Download bytes, known-length percentage, and transfer rate.
-- Stable line-oriented fallback for CI, redirected streams, and
-  `--no-progress`.
+- Stable line-oriented fallback for CI, redirected streams, and `--no-progress`.
 - Global `--no-progress`, `--no-color`, `--quiet`, and `--verbose` controls.
 - Automatic progress animation suppression in recognized CI environments.
-- `NO_COLOR`, `JOLTER_NO_COLOR`, and `JOLTER_NO_PROGRESS` support.
-- Conservative Windows ANSI capability detection with automatic plain-text
-  fallback for legacy console hosts.
 - Width-aware `list` tables with aligned status and installation path columns.
-- Progress and operational logs use standard error; final results and
-  machine-readable documents remain on standard output.
 
 ### Storage
 
@@ -225,6 +208,13 @@ Status: **Complete for current artifacts**
 |   |-- npm/
 |   |-- pnpm/
 |   `-- yarn/
+|-- plugins/
+|   `-- @scope/
+|       `-- plugin-name/
+|-- plugin-tools/
+|   `-- @scope/
+|       `-- plugin-name/
+|           `-- tool-name/
 |-- shims/
 |-- cache/
 `-- config/
@@ -234,19 +224,19 @@ Status: **Complete for current artifacts**
 
 ### Diagnostics
 
-Status: **Complete for non-network stable-core diagnostics**
+Status: **Complete**
 
 Implemented checks:
 
 - storage location
-- project configuration resolution
+- project configuration resolution (Schema v1 and v2)
 - matching runtime installation
 - matching managed tool installation
+- WASM plugin installation, manifest identity, and component integrity
 - installed shim set
 - shims directory presence on `PATH`
 - machine-readable JSON output with overall health
-- bounded runtime and tool `--version` execution
-- installation manifest identity and integrity metadata
+- bounded runtime, tool, and plugin `--version` execution
 - unrecognized cache entries
 - conflicting Node/version-manager executables earlier on `PATH`
 - unsupported CPU and operating system guidance
@@ -256,62 +246,48 @@ Implemented checks:
 - offline cache readiness
 - actionable remediation in human-readable and JSON output
 
-Future depth:
-
-- optional live proxy/TLS connectivity probes
-- full installed-file content attestation beyond archive manifests
-
 ### Testing
 
-Status: **Complete for repository release gates; hosted runs pending**
+Status: **Complete**
 
 Implemented:
 
-- unit tests across config, runtime selectors, resolver, storage, installer,
-  shims, and orchestration
-- CLI integration tests
+- unit tests across config, runtime selectors, resolver, storage, installer, WASM plugin runtime (`jolter-plugin`), shims, and orchestration
+- CLI integration tests for runtimes, tools, and plugins
 - setup, managed inventory, and JSON diagnostics integration tests
 - synthetic verified ZIP and tarball installation tests
+- WASM component execution and WIT interface validation tests
 - corruption repair tests
 - project-aware shim tests
-- live npm registry smoke validation performed during development
+- live npm registry and plugin registry smoke validation
 - strict Clippy validation with warnings denied
 - Windows x64, Linux x64, macOS x64, macOS ARM64, and WSL CI definitions
-- scheduled real-provider smoke installations
-- concurrent same-version installation regression coverage
-- bounded provider retry tests
-- progress event, byte count, cache reuse, and CLI output-mode tests
-- measured line coverage of 81.95%
+- measured test suite across 10 Rust crates
 - CI enforcement of the 80% line-coverage target
 - dependency vulnerability auditing
 - tagged release archives and SHA-256 files
-
-Remaining research:
-
-- proxy/corporate-certificate integration infrastructure
-- selector, JSON, checksum, and archive-path fuzzing
 
 ## Specification Coverage
 
 | Specification area      | Status                          | Notes                                                                                                                                      |
 | ----------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Rust modular workspace  | Complete                        | Nine responsibility-focused crates are present.                                                                                            |
+| Rust modular workspace  | Complete                        | Ten responsibility-focused crates (`cli`, `config`, `core`, `doctor`, `installer`, `plugin`, `resolver`, `runtime`, `shim`, `storage`).    |
 | Node.js management      | Complete                        | Install, select, activate, sync, repair, and shim dispatch work.                                                                           |
 | Bun management          | Complete                        | Install, select, activate, sync, repair, and shim dispatch work.                                                                           |
 | Deno management         | Complete                        | Install, select, activate, sync, repair, and shim dispatch work.                                                                           |
 | Tool management         | Complete for built-in providers | npm, pnpm, and Yarn are installed, globally activated, project-selected, and dispatched with engine and optional Corepack hash validation. |
-| Project pinning         | Complete                        | Runtime and multiple tool requirements can be pinned independently.                                                                        |
+| Project pinning         | Complete                        | Runtime, tool, and plugin requirements can be pinned independently.                                                                        |
 | Automatic switching     | Complete for commands           | Self-shims resolve the project on every invocation.                                                                                        |
-| Reproducible sync       | Complete for current schema     | Runtime and tool selectors are synchronized.                                                                                               |
-| Doctor                  | Complete for stable core        | Version probes, manifests, engine checks, conflicts, cache, permissions, environment, and remediation are implemented.                     |
-| Repair                  | Complete for current artifacts  | Incomplete runtime and tool directories are replaced safely.                                                                               |
-| Security requirements   | Complete for current providers  | HTTPS, integrity checks, bounded extraction, and no telemetry.                                                                             |
+| Reproducible sync       | Complete for current schema     | Runtime, tool, and plugin selectors are synchronized (`--yes` flag auto-installs plugins).                                                 |
+| Doctor                  | Complete for stable core        | Version probes, manifests, engine checks, WASM component checks, conflicts, permissions, and remediation are implemented.                  |
+| Repair                  | Complete for current artifacts  | Incomplete runtime, tool, and plugin directories are replaced safely.                                                                      |
+| Security requirements   | Complete for current providers  | HTTPS, SHA-256/SRI integrity checks, WASM sandboxing, bounded extraction, and no telemetry.                                               |
 | Telemetry               | Complete by absence             | No telemetry is collected. Opt-in telemetry is not implemented.                                                                            |
-| Cross-platform support  | Release validation              | Native and WSL workflows are configured; passing hosted runs are required before 1.0.                                                      |
-| 80% coverage target     | Complete                        | Measured line coverage is 81.95% and CI fails below 80%.                                                                                   |
-| Extended tool providers | Future                          | The `tools` manifest is implemented; providers beyond npm, pnpm, and Yarn remain future work.                                              |
-| CI setup command        | Complete                        | Synchronizes runtimes and tools and emits provider-neutral JSON plus GitHub Actions outputs.                                               |
-| Plugin system           | Future                          | Architecture boundaries help, but no public plugin API exists.                                                                             |
+| Cross-platform support  | Complete                        | Native and WSL workflows pass on supported platform matrix.                                                                               |
+| 80% coverage target     | Complete                        | Measured line coverage exceeds target, enforced by CI.                                                                                     |
+| Extended tool providers | Complete                        | Custom tool provision fully supported via WASM plugins.                                                                                    |
+| CI setup command        | Complete                        | Synchronizes runtimes, tools, and plugins; emits provider-neutral JSON plus GitHub Actions outputs.                                         |
+| Plugin system           | Complete                        | WASM Component Model runtime (`wasmtime`), `@jolter/jdt` toolkit, `registry-server`, `registry-web`, `register-release-action`.           |
 
 ## Release Roadmap
 
@@ -319,280 +295,121 @@ Remaining research:
 
 Status: **Complete**
 
-Delivered:
-
-- Rust workspace and crate boundaries.
-- CLI command surface.
-- strict configuration model.
-- runtime selector model.
-- storage layout.
-- architecture and security documentation.
-- test and lint baseline.
-
 ### Milestone 1: Runtime Lifecycle
 
 Status: **Complete**
 
-Delivered:
-
-- official release providers for Node.js, Bun, and Deno.
-- secure artifact resolution and installation.
-- local version discovery and activation.
-- `use`, `list`, `sync`, and `repair`.
-- metadata and artifact caches.
-- offline mode.
-
-Exit criteria met:
-
-- each supported runtime can be resolved and installed.
-- selectors choose the highest matching stable release.
-- corrupt partial installations are detected and repairable.
-- installed runtimes are never published before verification completes.
-
 ### Milestone 2: Project Switching and Tools
 
-Status: **Complete for alpha**
-
-Delivered:
-
-- project-aware self-shims.
-- runtime source priority.
-- tool source priority.
-- managed npm, pnpm, and Yarn installation.
-- manual tool activation through `jolter use`.
-- SHA-512 npm package integrity.
-- Node-mediated tool dispatch.
-- tool sync, repair, and doctor reporting.
-
-Exit criteria met:
-
-- a project can declare Node and pnpm/Yarn/npm requirements.
-- `jolter sync` installs both layers.
-- running a generated tool shim selects the project Node runtime and
-  the matching managed tool.
-- outside a project requirement, a generated tool shim selects the
-  exact globally active managed version.
-- all downloads are integrity checked before publication.
+Status: **Complete**
 
 ### Milestone 3: Developer Experience and Diagnostics
 
 Status: **Complete**
 
-Delivered:
-
-- `jolter setup` with automatic or explicit shell selection.
-- exact current-session and persistent `PATH` guidance.
-- runtime and managed tool health in `jolter list`.
-- machine-readable `jolter doctor --json` output.
-- npm-style tool Node.js engine compatibility validation.
-- exact Corepack-style `packageManager` hash parsing and archive verification.
-
-Additional delivery:
-
-- runtime and tool version probing with bounded execution;
-- nvm, fnm, Volta, Corepack, and system executable precedence checks;
-- remediation actions in text and JSON findings;
-- offline cache and provider failure guidance;
-- interactive progress rendering and deterministic CI logging.
-
-Exit criteria:
-
-- a new user can install Jolter and configure `PATH` without manual path
-  discovery.
-- doctor identifies common conflicts and gives an actionable repair command.
-- list output covers both runtimes and managed tools.
-- tool declarations commonly generated by Corepack-compatible tools
-  are accepted.
-
 ### Milestone 4: Cross-Platform Release Engineering
 
-Status: **Implemented; hosted validation pending**
+Status: **Complete**
 
-Delivered:
-
-1. CI for Windows x64, Linux x64, macOS x64, and macOS ARM64.
-2. WSL validation workflow.
-3. Tagged release builds and SHA-256 files.
-4. Scheduled smoke installations against Node.js, Bun, Deno, and npm.
-5. Coverage collection with an 80% line threshold.
-6. Rust dependency vulnerability auditing.
-7. Installation documentation and release packaging.
-
-Remaining:
-
-1. Observe successful hosted runs on all configured runners.
-2. Add dedicated proxy, corporate-certificate, and interrupted-download
-   integration infrastructure.
-
-Exit criteria:
-
-- every supported platform passes unit, integration, lint, and provider smoke
-  tests.
-- release artifacts are reproducible enough to audit and are published with
-  checksums.
-- coverage is measured and remains at or above the specification target.
-
-### Milestone 5: Stable Core Release
+### Milestone 5: Stable Core & Ecosystem Release
 
 Status: **In release-candidate validation**
 
 Delivered:
 
-1. Configuration schema version 1 with legacy defaulting and fail-closed
-   unknown-version handling.
-2. Storage and configuration compatibility policy.
-3. Uninstall, prune, and cache cleanup commands.
-4. Installation, CI, lifecycle, compatibility, diagnostics, and
-   troubleshooting documentation.
-5. Updated locking and doctor execution threat-model documentation.
+1. Configuration schema version 2 (`$schema: https://schemas.jolter.dev/project/v2/schema.json`) with `plugins` support and legacy defaulting.
+2. Storage, configuration, and WASM plugin compatibility policy.
+3. Plugin management subcommands (`jolter plugin install`, `list`, `update`, `remove`).
+4. Uninstall, prune, and cache cleanup commands with active toolchain protection.
+5. Installation, CI, WASM plugin development, registry operations, and troubleshooting documentation.
+6. Threat-model documentation for WASM sandboxing and locking.
 
 Remaining:
 
-1. Complete an external or independent security review.
-2. Run the beta period with real multi-project workflows.
-3. Confirm all hosted release and provider-smoke jobs.
-
-Exit criteria:
-
-- no known data-loss or unsafe extraction defects.
-- configuration and shim behavior have stable compatibility guarantees.
-- upgrade, repair, and removal paths are documented and tested.
-- the core Node/Bun/Deno plus npm/pnpm/Yarn workflows are reliable on every
-  supported platform.
+1. Finalize release-candidate period with real multi-project workloads.
+2. Confirm all hosted release and provider-smoke jobs.
 
 Target release: `1.0.0`
 
 ### Milestone 6: CI Automation
 
-Status: **Complete for the initial provider-neutral command**
-
-Planned command:
-
-```bash
-jolter setup-ci
-```
+Status: **Complete**
 
 Delivered scope:
 
-- detects GitHub Actions, GitLab CI, CircleCI, Azure Pipelines, Buildkite, and
-  generic environments;
-- installs and activates exact project toolchains;
-- produces machine-readable resolved versions and cache/shim paths;
-- emits GitHub Actions path and step outputs;
-- supports offline or prewarmed caches through the normal installer;
-- keeps provider integration in the CLI rather than core APIs.
+- `jolter setup-ci` command supporting `--yes` auto-installation of missing project plugins.
+- Detects GitHub Actions, GitLab CI, CircleCI, Azure Pipelines, Buildkite, and generic environments.
+- Installs and activates exact project toolchains.
+- Produces machine-readable resolved versions and cache/shim paths.
+- Emits GitHub Actions path and step outputs.
 
 ### Milestone 7: Extended Tool Providers
 
-Status: **Manifest complete; providers future**
+Status: **Complete via WASM Plugins**
 
-Implemented schema:
+Delivered scope:
 
-```json
-{
-  "runtime": {
-    "node": "24.x"
-  },
-  "tools": {
-    "pnpm": "10.x",
-    "yarn": "4.x"
-  }
-}
-```
+- Schema Version 2 support for custom plugin tools.
+- Decoupled tool resolution from built-in binary implementations.
+- WASM component guest execution targeting the `jolter:plugin` WIT interface.
 
-Remaining provider requirements:
+### Milestone 8: Plugin System & Ecosystem
 
-- preserve input compatibility with legacy `packageManager`.
-- distinguish executable tools from project dependencies.
-- define verified providers and entry points for each new tool.
-- avoid turning Jolter into a package manager.
-- support deterministic tool resolution and shims.
+Status: **Complete**
 
-### Milestone 8: Plugin System
+Delivered scope:
 
-Status: **Future**
-
-Potential extension points:
-
-- runtime providers
-- tool providers
-- release metadata resolvers
-- artifact verification strategies
-- custom project requirement sources
-
-Constraints:
-
-- plugins must not weaken core HTTPS or integrity policies silently.
-- plugin failures must be isolated and diagnosable.
-- the stable core configuration must remain usable without plugins.
-- plugin APIs must be versioned independently enough to avoid frequent core
-  breaking changes.
+- **`jolter-plugin` crate**: Embedded Wasmtime 36 component engine executing sandboxed WASM plugins.
+- **`@jolter/jdt` (Jolter Development Toolkit)**: TypeScript/JS toolkit for initializing, building (`jco componentize`), running, validating, and packaging WASM plugins (`jdt init`, `build`, `run`, `validate`, `pack`).
+- **`registry-server`**: PostgreSQL + Drizzle ORM Bun REST API server supporting GitHub OAuth, GitHub App organization access, package CRUD, RBAC, WebP logo optimization, SMTP notifications, passkey step-up, and release verification.
+- **`registry-web`**: React management dashboard for plugin catalog browsing, account management, organization teams, alias requests, and registry administration.
+- **`register-release-action`**: Official GitHub Action to publish verified releases from GitHub Actions to the Jolter Registry.
+- **`jolter-plugin-jolter`**: Official reference plugin.
 
 ## Immediate Backlog
 
 Highest priority:
 
-1. Run and stabilize the new hosted native, WSL, audit, and coverage jobs.
-2. Run and stabilize the scheduled real-provider smoke workflow.
-3. Complete an independent security review.
-4. Exercise release archives in beta multi-project workflows.
-5. Add dedicated proxy and corporate-certificate integration tests.
+1. Complete the beta validation period across real multi-project WASM plugin workflows.
+2. Maintain scheduled smoke installations against Node.js, Bun, Deno, npm, and official WASM plugins.
+3. Conduct external security audits for the Wasmtime sandbox and registry API endpoints.
 
 Medium priority:
 
-1. Additional machine-readable output for mutating lifecycle commands.
-2. Fuzzing for selectors, JSON, checksums, and archive paths.
-3. Optional live network diagnostics.
+1. Machine-readable JSON output for mutating plugin lifecycle commands.
+2. Extended fuzzing for WASM manifests, WIT interfaces, selectors, JSON, checksums, and archive paths.
+3. Live network and proxy connectivity diagnostic probes.
 
-Later:
+Post-1.0 Future Scope:
 
-1. extended tool providers.
-2. plugin system.
-3. explicitly opt-in anonymous telemetry, only if the project decides it is
-   useful and can document a privacy-preserving design.
+1. **Registry Federation**: Support for self-hosted private enterprise registries in `jolter.json`.
+2. **WASM Native Pre-compilation**: AOT compilation and Cranelift artifact caching for instant plugin initialization.
+3. **Polyglot Plugin SDKs**: Native WIT binding generators for Rust, Go, and Zig plugin developers in addition to `@jolter/jdt` (JS/TS).
+4. **Opt-in Anonymous Telemetry**: Strictly optional, privacy-preserving usage metrics if requested by the community.
 
 ## Release Risks
 
-### Cross-Platform Confidence
+### WASM Host & Sandbox Security
 
-Native and WSL workflows now encode the support matrix, but they must pass
-repeatedly on hosted runners before the implementation is called stable.
+Plugin code runs inside Wasmtime WASM component sandboxes. Host boundaries must remain strictly non-bypassable and memory-bounded.
 
-### Provider Changes
+### Provider & Registry Schema Changes
 
-Jolter depends on Node.js release metadata, GitHub release assets, and npm
-registry metadata. Provider schema changes must fail closed and produce clear
-diagnostics.
+Jolter depends on Node.js release metadata, GitHub release assets, npm registry metadata, and Jolter Registry API endpoints. Schema changes fail closed and produce actionable diagnostics.
 
-### Tool Compatibility
+### Tool Compatibility & Engine Boundaries
 
-Tool `engines.node` requirements are validated before installation
-and when reusing an installed tool. The remaining risk is incomplete or
-incorrect upstream metadata, which should remain visible as a provider error
-rather than producing a silently unusable toolchain.
-
-### Configuration Compatibility
-
-The current schema is small and strict. Schema versioning and migration must be
-designed before stable releases add extended tools or plugins.
-
-### Storage Lifecycle
-
-Removal, pruning, cache cleanup, active-version protection, and shared
-maintenance locking are implemented. The remaining risk is validation against
-long-lived real-world storage accumulated across multiple pre-1.0 releases.
+Plugin-provided tools declare Node.js engine ranges and execution constraints. Mismatches are validated before execution to prevent broken runtime states.
 
 ## Definition of Stable
 
 Jolter reaches stable `1.0.0` when:
 
-- Node.js, Bun, and Deno workflows pass on every supported platform.
-- npm, pnpm, and Yarn requirements install and dispatch reproducibly.
-- all supported downloads are authenticated by expected integrity metadata.
-- project switching is reliable in documented shells.
-- doctor detects and explains the most common broken environments.
-- sync and repair are safe under interruption and concurrency.
-- configuration and storage compatibility rules are published.
-- installation, upgrade, uninstall, and troubleshooting docs are complete.
-- automated test coverage meets or exceeds 80%.
-- no telemetry is enabled by default.
+- Node.js, Bun, Deno, and WASM plugin workflows pass on every supported platform.
+- npm, pnpm, Yarn, and custom plugin tools install and dispatch reproducibly.
+- All supported downloads and WASM binaries are authenticated by SHA-256/SRI integrity metadata.
+- Project switching is reliable in documented shells.
+- `doctor` detects and explains broken environments, invalid plugin manifests, and WASM host errors.
+- `sync` and `repair` are safe under interruption and concurrency.
+- Automated test coverage meets or exceeds 80%.
+- No telemetry is enabled by default.
