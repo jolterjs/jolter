@@ -8,7 +8,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use jolter_resolver::{DevEngineOnFail, ProjectResolution, ResolvedTool, resolve};
+use jolter_resolver::{DevEngineItem, DevEngineOnFail, ProjectResolution, ResolvedTool, resolve};
 use jolter_runtime::RuntimeKind;
 use jolter_shim::SHIM_COMMANDS;
 use jolter_storage::{InstalledRuntime, InstalledTool, Storage};
@@ -251,7 +251,18 @@ fn dev_engines_checks(
         return;
     };
 
-    for item in &dev_engines.runtime {
+    dev_engines_runtime_checks(&dev_engines.runtime, runtime, checks);
+    dev_engines_package_manager_checks(&dev_engines.package_manager, checks);
+    dev_engines_cpu_checks(&dev_engines.cpu, checks);
+    dev_engines_os_checks(&dev_engines.os, checks);
+}
+
+fn dev_engines_runtime_checks(
+    items: &[DevEngineItem],
+    runtime: Option<&InstalledRuntime>,
+    checks: &mut Vec<Check>,
+) {
+    for item in items {
         let (name, selector) = item.parsed_name_and_selector();
         let mode = item.on_fail_mode();
         if mode == DevEngineOnFail::Ignore {
@@ -301,7 +312,7 @@ fn dev_engines_checks(
                         let remed = "pin a compatible runtime version or update package.json#devEngines.runtime";
                         match mode {
                             DevEngineOnFail::Warn => {
-                                checks.push(Check::warning("devEngines: runtime", msg, remed))
+                                checks.push(Check::warning("devEngines: runtime", msg, remed));
                             }
                             _ => checks.push(Check::fail("devEngines: runtime", msg, remed)),
                         }
@@ -326,8 +337,10 @@ fn dev_engines_checks(
             }
         }
     }
+}
 
-    for item in &dev_engines.package_manager {
+fn dev_engines_package_manager_checks(items: &[DevEngineItem], checks: &mut Vec<Check>) {
+    for item in items {
         let (name, _selector) = item.parsed_name_and_selector();
         let mode = item.on_fail_mode();
         if mode == DevEngineOnFail::Ignore {
@@ -342,8 +355,10 @@ fn dev_engines_checks(
             format!("devEngines requirement specified for packageManager `{clean_name}`"),
         ));
     }
+}
 
-    for item in &dev_engines.cpu {
+fn dev_engines_cpu_checks(items: &[DevEngineItem], checks: &mut Vec<Check>) {
+    for item in items {
         let mode = item.on_fail_mode();
         if mode == DevEngineOnFail::Ignore {
             continue;
@@ -352,9 +367,9 @@ fn dev_engines_checks(
         let is_negated = item.name.starts_with('!');
         let clean_name = item.name.strip_prefix('!').unwrap_or(&item.name);
         let base_match = match (current_arch, clean_name.to_ascii_lowercase().as_str()) {
-            ("x86_64", "x64" | "x86_64" | "amd64") => true,
-            ("aarch64", "arm64" | "aarch64") => true,
-            ("x86", "ia32" | "x86" | "i686") => true,
+            ("x86_64", "x64" | "x86_64" | "amd64")
+            | ("aarch64", "arm64" | "aarch64")
+            | ("x86", "ia32" | "x86" | "i686") => true,
             (actual, required) => actual.eq_ignore_ascii_case(required),
         };
         let is_match = if is_negated { !base_match } else { base_match };
@@ -376,8 +391,10 @@ fn dev_engines_checks(
             }
         }
     }
+}
 
-    for item in &dev_engines.os {
+fn dev_engines_os_checks(items: &[DevEngineItem], checks: &mut Vec<Check>) {
+    for item in items {
         let mode = item.on_fail_mode();
         if mode == DevEngineOnFail::Ignore {
             continue;
@@ -386,9 +403,9 @@ fn dev_engines_checks(
         let is_negated = item.name.starts_with('!');
         let clean_name = item.name.strip_prefix('!').unwrap_or(&item.name);
         let base_match = match (current_os, clean_name.to_ascii_lowercase().as_str()) {
-            ("windows", "win32" | "windows") => true,
-            ("macos", "darwin" | "macos" | "osx") => true,
-            ("linux", "linux") => true,
+            ("windows", "win32" | "windows")
+            | ("macos", "darwin" | "macos" | "osx")
+            | ("linux", "linux") => true,
             (actual, required) => actual.eq_ignore_ascii_case(required),
         };
         let is_match = if is_negated { !base_match } else { base_match };

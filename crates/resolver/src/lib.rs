@@ -66,6 +66,7 @@ pub enum DevEngineOnFail {
 }
 
 impl DevEngineItem {
+    #[must_use]
     pub fn parsed_name_and_selector(&self) -> (String, Option<String>) {
         if let Some((name, selector)) = self.name.rsplit_once('@') {
             if !name.is_empty() && !selector.is_empty() {
@@ -164,25 +165,25 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
     let discovered = discover_project_files(&start);
 
     let config = discovered
-        .config_path
+        .config
         .as_deref()
         .map(ProjectConfig::from_path)
         .transpose()?;
     let project_root = discovered
-        .config_path
+        .config
         .as_deref()
         .and_then(Path::parent)
         .unwrap_or(&start)
         .to_path_buf();
 
-    let (pkg_runtime, pkg_tools, dev_engines) = match discovered.package_json_path.as_deref() {
+    let (pkg_runtime, pkg_tools, dev_engines) = match discovered.package_json.as_deref() {
         Some(path) => parse_package_json(path)?,
         None => (None, Vec::new(), None),
     };
 
     let runtime = match config.as_ref().and_then(runtime_from_config).transpose()? {
         Some(runtime) => Some(runtime),
-        None => match discovered.node_version_path {
+        None => match discovered.node_version {
             Some((path, source)) => parse_node_file(&path, source)?,
             None => pkg_runtime,
         },
@@ -208,49 +209,49 @@ pub fn resolve(start: &Path) -> Result<ProjectResolution, ResolverError> {
 }
 
 struct DiscoveredFiles {
-    config_path: Option<PathBuf>,
-    node_version_path: Option<(PathBuf, RequirementSource)>,
-    package_json_path: Option<PathBuf>,
+    config: Option<PathBuf>,
+    node_version: Option<(PathBuf, RequirementSource)>,
+    package_json: Option<PathBuf>,
 }
 
 fn discover_project_files(start: &Path) -> DiscoveredFiles {
-    let mut config_path = None;
-    let mut node_version_path = None;
-    let mut package_json_path = None;
+    let mut config = None;
+    let mut node_version = None;
+    let mut package_json = None;
 
     for directory in start.ancestors() {
-        if config_path.is_none() {
+        if config.is_none() {
             let candidate = directory.join(jolter_config::CONFIG_FILE_NAME);
             if candidate.is_file() {
-                config_path = Some(candidate);
+                config = Some(candidate);
             }
         }
-        if node_version_path.is_none() {
+        if node_version.is_none() {
             let node_ver = directory.join(".node-version");
             if node_ver.is_file() {
-                node_version_path = Some((node_ver, RequirementSource::NodeVersion));
+                node_version = Some((node_ver, RequirementSource::NodeVersion));
             } else {
                 let nvmrc = directory.join(".nvmrc");
                 if nvmrc.is_file() {
-                    node_version_path = Some((nvmrc, RequirementSource::Nvmrc));
+                    node_version = Some((nvmrc, RequirementSource::Nvmrc));
                 }
             }
         }
-        if package_json_path.is_none() {
+        if package_json.is_none() {
             let pkg = directory.join("package.json");
             if pkg.is_file() {
-                package_json_path = Some(pkg);
+                package_json = Some(pkg);
             }
         }
-        if config_path.is_some() && node_version_path.is_some() && package_json_path.is_some() {
+        if config.is_some() && node_version.is_some() && package_json.is_some() {
             break;
         }
     }
 
     DiscoveredFiles {
-        config_path,
-        node_version_path,
-        package_json_path,
+        config,
+        node_version,
+        package_json,
     }
 }
 
@@ -379,16 +380,13 @@ struct ParsedPackageJson {
     package_manager: Option<Value>,
 }
 
-fn parse_package_json(
-    path: &Path,
-) -> Result<
-    (
-        Option<ResolvedRuntime>,
-        Vec<ResolvedTool>,
-        Option<DevEngines>,
-    ),
-    ResolverError,
-> {
+type PackageJsonParseResult = (
+    Option<ResolvedRuntime>,
+    Vec<ResolvedTool>,
+    Option<DevEngines>,
+);
+
+fn parse_package_json(path: &Path) -> Result<PackageJsonParseResult, ResolverError> {
     let contents = fs::read_to_string(path).map_err(|source| ResolverError::Read {
         path: path.to_path_buf(),
         source,

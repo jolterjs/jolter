@@ -1184,6 +1184,19 @@ impl Installer {
     ) -> Result<Release, InstallerError> {
         let asset_name = runtime.asset_name(self.platform)?;
 
+        if let Some(release) = self.resolve_github_direct(request, runtime, &asset_name) {
+            return Ok(release);
+        }
+
+        self.resolve_github_paged(request, runtime, &asset_name)
+    }
+
+    fn resolve_github_direct(
+        &self,
+        request: &RuntimeRequest,
+        runtime: GithubRuntime,
+        asset_name: &str,
+    ) -> Option<Release> {
         let direct_url = if request.selector.eq_ignore_ascii_case("latest") {
             Some(format!(
                 "{GITHUB_API}/repos/{}/releases/latest",
@@ -1202,47 +1215,43 @@ impl Installer {
             None
         };
 
-        if let Some(url) = direct_url {
-            if let Ok(contents) = self.metadata_text(&url) {
-                if let Ok(release) = serde_json::from_str::<GithubRelease>(&contents) {
-                    if !release.draft && !release.prerelease {
-                        if let Some(version) = runtime.parse_tag(&release.tag_name) {
-                            if request.matches_release(&version, false) {
-                                if let Some(asset) =
-                                    release.assets.iter().find(|asset| asset.name == asset_name)
-                                {
-                                    let sha_res =
-                                        match asset.digest.as_deref().and_then(parse_github_digest)
-                                        {
-                                            Some(checksum) => Ok(checksum),
-                                            None => runtime.fallback_checksum(
-                                                self,
-                                                &release,
-                                                asset,
-                                                &asset_name,
-                                            ),
-                                        };
-                                    if let Ok(sha256) = sha_res {
-                                        return Ok(Release {
-                                            kind: runtime.kind(),
-                                            version,
-                                            artifact: Artifact {
-                                                url: asset.browser_download_url.clone(),
-                                                integrity: ArtifactIntegrity::Sha256(sha256),
-                                                file_name: asset_name,
-                                                format: ArchiveFormat::Zip,
-                                                strip_components: runtime.strip_components(),
-                                            },
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        let url = direct_url?;
+        let contents = self.metadata_text(&url).ok()?;
+        let release: GithubRelease = serde_json::from_str(&contents).ok()?;
+        if release.draft || release.prerelease {
+            return None;
         }
+        let version = runtime.parse_tag(&release.tag_name)?;
+        if !request.matches_release(&version, false) {
+            return None;
+        }
+        let asset = release.assets.iter().find(|asset| asset.name == asset_name)?;
+        let sha256 = match asset.digest.as_deref().and_then(parse_github_digest) {
+            Some(checksum) => checksum,
+            None => runtime
+                .fallback_checksum(self, &release, asset, asset_name)
+                .ok()?,
+        };
 
+        Some(Release {
+            kind: runtime.kind(),
+            version,
+            artifact: Artifact {
+                url: asset.browser_download_url.clone(),
+                integrity: ArtifactIntegrity::Sha256(sha256),
+                file_name: asset_name.to_string(),
+                format: ArchiveFormat::Zip,
+                strip_components: runtime.strip_components(),
+            },
+        })
+    }
+
+    fn resolve_github_paged(
+        &self,
+        request: &RuntimeRequest,
+        runtime: GithubRuntime,
+        asset_name: &str,
+    ) -> Result<Release, InstallerError> {
         for page in 1..=10 {
             let url = format!(
                 "{GITHUB_API}/repos/{}/releases?per_page=100&page={page}",
@@ -1276,11 +1285,11 @@ impl Installer {
                     .find(|asset| asset.name == asset_name)
                     .ok_or_else(|| InstallerError::AssetNotFound {
                         version: version.clone(),
-                        asset: asset_name.clone(),
+                        asset: asset_name.to_string(),
                     })?;
                 let sha256 = match asset.digest.as_deref().and_then(parse_github_digest) {
                     Some(checksum) => checksum,
-                    None => runtime.fallback_checksum(self, &release, asset, &asset_name)?,
+                    None => runtime.fallback_checksum(self, &release, asset, asset_name)?,
                 };
                 return Ok(Release {
                     kind: runtime.kind(),
@@ -1288,7 +1297,7 @@ impl Installer {
                     artifact: Artifact {
                         url: asset.browser_download_url.clone(),
                         integrity: ArtifactIntegrity::Sha256(sha256),
-                        file_name: asset_name,
+                        file_name: asset_name.to_string(),
                         format: ArchiveFormat::Zip,
                         strip_components: runtime.strip_components(),
                     },
