@@ -1225,7 +1225,10 @@ impl Installer {
         if !request.matches_release(&version, false) {
             return None;
         }
-        let asset = release.assets.iter().find(|asset| asset.name == asset_name)?;
+        let asset = release
+            .assets
+            .iter()
+            .find(|asset| asset.name == asset_name)?;
         let sha256 = match asset.digest.as_deref().and_then(parse_github_digest) {
             Some(checksum) => checksum,
             None => runtime
