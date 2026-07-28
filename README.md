@@ -13,7 +13,7 @@ and use the right toolchain without manually switching versions.
 Run in PowerShell:
 
 ```powershell
-irm https://get.jolter.dev/install.ps1 | iex
+irm https://jolter.dev/install.ps1 | iex
 ```
 
 ### Linux and macOS
@@ -21,7 +21,7 @@ irm https://get.jolter.dev/install.ps1 | iex
 Run in a terminal:
 
 ```bash
-curl -fsSL https://get.jolter.dev/install.sh | sh
+curl -fsSL https://jolter.dev/install.sh | sh
 ```
 
 Then finish shell setup:
