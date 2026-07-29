@@ -12,7 +12,7 @@ This guide is for contributors working on the Jolter repository.
 Clone the repository and build the workspace:
 
 ```bash
-cargo build --workspace --all-targets --locked
+make build
 ```
 
 The development binary is:
@@ -44,35 +44,31 @@ boundaries.
 Format:
 
 ```bash
-cargo fmt --all -- --check
+make fmt-check
 ```
 
 Lint:
 
 ```bash
-cargo clippy --workspace --all-targets --locked -- -D warnings
+make clippy
 ```
 
 Test:
 
 ```bash
-cargo test --workspace --all-targets --locked
+make test
 ```
 
 Coverage:
 
 ```bash
-cargo llvm-cov \
-  --workspace \
-  --all-targets \
-  --locked \
-  --fail-under-lines 80
+make coverage
 ```
 
 Dependency audit:
 
 ```bash
-cargo audit
+make audit
 ```
 
 CI runs formatting, Clippy, native tests on Windows/Linux/macOS, WSL tests,
@@ -94,14 +90,14 @@ to a temporary directory for manual experiments:
 
 ```bash
 export JOLTER_HOME="$(mktemp -d)"
-cargo run -p jolter-cli -- use node@24
+make run ARGS="use node@24"
 ```
 
 PowerShell:
 
 ```powershell
 $env:JOLTER_HOME = Join-Path $env:TEMP "jolter-dev"
-cargo run -p jolter-cli -- use node@24
+make run ARGS="use node@24"
 ```
 
 ## Change Expectations

@@ -15,9 +15,9 @@ Provide a summary of the changes made and the motivation behind them. If this pu
 
 Before submitting, please ensure the following checks pass locally:
 
-- [ ] `cargo fmt --all -- --check` passes cleanly
-- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings` has no warnings
-- [ ] `cargo test --workspace --all-targets --locked` passes all tests
+- [ ] `make fmt-check` passes cleanly
+- [ ] `make clippy` has no warnings
+- [ ] `make test` passes all tests
 - [ ] Code changes include corresponding unit or integration tests (where applicable)
 - [ ] Relevant documentation in `docs/` or `jolter.dev/docs` has been updated
 

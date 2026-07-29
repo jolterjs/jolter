@@ -33,7 +33,7 @@ All contributors are expected to adhere to our [Code of Conduct](CODE_OF_CONDUCT
 2. **Build the workspace**:
 
    ```bash
-   cargo build --workspace --all-targets --locked
+   make build
    ```
 
 3. **Located development binaries**:
@@ -49,31 +49,31 @@ Before opening a pull request, run all quality checks to ensure continuous integ
 ### 1. Code Formatting
 
 ```bash
-cargo fmt --all -- --check
+make fmt-check
 ```
 
 ### 2. Clippy Lints
 
 ```bash
-cargo clippy --workspace --all-targets --locked -- -D warnings
+make clippy
 ```
 
 ### 3. Tests
 
 ```bash
-cargo test --workspace --all-targets --locked
+make test
 ```
 
 ### 4. Test Coverage (Optional)
 
 ```bash
-cargo llvm-cov --workspace --all-targets --locked --fail-under-lines 80
+make coverage
 ```
 
 ### 5. Dependency Audit
 
 ```bash
-cargo audit
+make audit
 ```
 
 ---
@@ -86,14 +86,14 @@ To avoid modifying your personal `$HOME/.jolter` directory during development, r
 
 ```bash
 export JOLTER_HOME="$(mktemp -d)"
-cargo run -p jolter-cli --bin jolter -- use node@24
+make run ARGS="use node@24"
 ```
 
 **PowerShell (Windows)**:
 
 ```powershell
 $env:JOLTER_HOME = Join-Path $env:TEMP "jolter-dev"
-cargo run -p jolter-cli --bin jolter -- use node@24
+make run ARGS="use node@24"
 ```
 
 ---

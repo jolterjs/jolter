@@ -23,7 +23,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        run: cargo build --release --locked
+        run: make build-release
 
       - name: Smoke test (Linux)
         shell: bash
@@ -74,7 +74,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        run: cargo build --release --locked
+        run: make build-release
 
       - name: Smoke test (Windows)
         shell: pwsh
@@ -133,7 +133,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        run: cargo build --release --locked
+        run: make build-release
 
       - name: Smoke test (macOS)
         shell: bash

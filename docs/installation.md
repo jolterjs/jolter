@@ -130,7 +130,7 @@ Rust `1.85` or newer is required:
 ```bash
 git clone https://github.com/jolterjs/jolter.git
 cd jolter
-cargo build --release --locked
+make build-release
 ```
 
 The executable is written to:
@@ -143,9 +143,9 @@ Unix:   target/release/jolter
 Run the repository quality gates before distributing a local build:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --all-targets --locked
+make fmt-check
+make clippy
+make test
 ```
 
 ## First Toolchain

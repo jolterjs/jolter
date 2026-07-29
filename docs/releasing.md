@@ -51,7 +51,7 @@ selection before publication.
 `.github/workflows/release.yml`:
 
 1. checks out the tagged source;
-2. builds each target with `cargo build --release --locked`;
+2. builds each target with `make build-release`;
 3. packages the binary with `README.md` and `LICENSE`;
 4. calculates SHA-256 files;
 5. uploads per-target workflow artifacts;

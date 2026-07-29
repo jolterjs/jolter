@@ -2,7 +2,8 @@
   "name": "jolter",
   "version": "0.3.0",
   "scripts": {
-    "format": "concurrently \"prettier --write .\" \"cargo fmt\""
+    "format": "make format",
+    "format:check": "make fmt-check"
   },
   "devDependencies": {
     "concurrently": "^10.0.4",
