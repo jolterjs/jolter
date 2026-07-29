@@ -311,11 +311,11 @@ fn run_with_jolter_in_dir(
 ) -> Result<ExitCode, CliError> {
     match cli.command {
         Command::Setup { shell } => {
-            install_shims(&jolter)?;
-            print_setup(&jolter, resolve_setup_shell(shell), ui);
+            install_shims(jolter)?;
+            print_setup(jolter, resolve_setup_shell(shell), ui);
             Ok(ExitCode::SUCCESS)
         }
-        Command::Use { target } => run_use(&jolter, target, ui),
+        Command::Use { target } => run_use(jolter, target, ui),
         Command::Pin { target } => {
             let pinned = target
                 .iter()
@@ -324,10 +324,10 @@ fn run_with_jolter_in_dir(
                 .join(", ");
             for target in target {
                 match target {
-                    UseTarget::Runtime(request) => jolter.pin_runtime(&current_dir, &request)?,
-                    UseTarget::Tool(request) => jolter.pin_tool(&current_dir, &request)?,
+                    UseTarget::Runtime(request) => jolter.pin_runtime(current_dir, &request)?,
+                    UseTarget::Tool(request) => jolter.pin_tool(current_dir, &request)?,
                     UseTarget::PluginTool { name, selector } => {
-                        jolter.pin_plugin_tool(&current_dir, &name, &selector)?;
+                        jolter.pin_plugin_tool(current_dir, &name, &selector)?;
                     }
                 }
             }
@@ -337,34 +337,34 @@ fn run_with_jolter_in_dir(
             ));
             Ok(ExitCode::SUCCESS)
         }
-        Command::Update { target, all } => run_update(&jolter, target, all, ui),
+        Command::Update { target, all } => run_update(jolter, target, all, ui),
         Command::List { json } => {
             if json {
                 ui.finish_progress();
-                print_inventory_json(&jolter)?;
+                print_inventory_json(jolter)?;
             } else {
-                print_inventory(&jolter, ui)?;
+                print_inventory(jolter, ui)?;
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Doctor { json } => run_doctor(&jolter, &current_dir, json, ui),
+        Command::Doctor { json } => run_doctor(jolter, current_dir, json, ui),
         Command::Sync { yes } => {
-            let outcome = jolter.sync_with_plugin_install(&current_dir, yes)?;
-            install_shims(&jolter)?;
+            let outcome = jolter.sync_with_plugin_install(current_dir, yes)?;
+            install_shims(jolter)?;
             print_sync_outcome("Synchronized", &outcome, ui);
             Ok(ExitCode::SUCCESS)
         }
         Command::Repair { yes } => {
-            let outcome = jolter.repair_with_plugin_install(&current_dir, yes)?;
-            install_shims(&jolter)?;
+            let outcome = jolter.repair_with_plugin_install(current_dir, yes)?;
+            install_shims(jolter)?;
             print_sync_outcome("Repaired", &outcome, ui);
             Ok(ExitCode::SUCCESS)
         }
-        Command::Plugin { command } => run_plugin(&jolter, command, ui),
-        Command::Uninstall { target, force } => run_uninstall(&jolter, target, force, ui),
-        Command::Prune { keep, dry_run } => run_prune(&jolter, &current_dir, keep, dry_run, ui),
-        Command::Cache { command } => run_cache(&jolter, command, ui),
-        Command::SetupCi { json, yes } => run_setup_ci(&jolter, &current_dir, json, yes, ui),
+        Command::Plugin { command } => run_plugin(jolter, command, ui),
+        Command::Uninstall { target, force } => run_uninstall(jolter, target, force, ui),
+        Command::Prune { keep, dry_run } => run_prune(jolter, current_dir, keep, dry_run, ui),
+        Command::Cache { command } => run_cache(jolter, command, ui),
+        Command::SetupCi { json, yes } => run_setup_ci(jolter, current_dir, json, yes, ui),
         Command::Completions { shell } => {
             ui.finish_progress();
             print_completions(shell);
@@ -1675,6 +1675,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn tests_run_cli_handlers() {
         let temp_dir = tempfile::tempdir().unwrap();
         let home_dir = temp_dir.path().join("home");

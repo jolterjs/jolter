@@ -1460,8 +1460,8 @@ mod tests {
 
         let empty_output = ProbeOutput {
             status: std::process::ExitStatus::default(),
-            stdout: "".to_owned(),
-            stderr: "".to_owned(),
+            stdout: String::new(),
+            stderr: String::new(),
             timed_out: false,
         };
         assert_eq!(empty_output.combined_output(), "<no output>");

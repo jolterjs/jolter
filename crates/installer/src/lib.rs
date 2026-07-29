@@ -3430,7 +3430,7 @@ mod tests {
         let delay1 = retry_delay(1, None);
         assert_eq!(delay1, std::time::Duration::from_millis(500));
         let delay2 = retry_delay(2, None);
-        assert_eq!(delay2, std::time::Duration::from_millis(1000));
+        assert_eq!(delay2, std::time::Duration::from_secs(1));
 
         // Retry-After header is respected (clamped to MAX_RETRY_AFTER = 5s)
         let header = reqwest::header::HeaderValue::from_static("3");

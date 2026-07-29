@@ -1434,10 +1434,10 @@ mod tests {
         assert_eq!(plugin_tools[0].provider, "@scope/my-plugin");
         assert_eq!(plugin_tools[0].tool, "my-tool");
 
-        let found_pt = storage
+        let found_plugin = storage
             .find_matching_plugin_tool("@scope/my-plugin", "my-tool", "1.x")
             .unwrap();
-        assert!(found_pt.is_some());
+        assert!(found_plugin.is_some());
 
         // Test find_matching for RuntimeRequest
         let node_v = Version::new(24, 1, 0);
@@ -1446,8 +1446,8 @@ mod tests {
         fs::write(&node_exe, b"node").unwrap();
 
         let req: jolter_runtime::RuntimeRequest = "node@24.1.0".parse().unwrap();
-        let found_rt = storage.find_matching(&req).unwrap();
-        assert!(found_rt.is_some());
+        let found_runtime = storage.find_matching(&req).unwrap();
+        assert!(found_runtime.is_some());
 
         let req_prefix: jolter_runtime::RuntimeRequest = "node@24".parse().unwrap();
         let found_rt_prefix = storage.find_matching(&req_prefix).unwrap();
