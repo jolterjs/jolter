@@ -32,6 +32,9 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install npm dependencies
+        run: make install
+
       - name: Format check
         run: make fmt-check
 
