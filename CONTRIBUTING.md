@@ -24,12 +24,14 @@ All contributors are expected to adhere to our [Code of Conduct](CODE_OF_CONDUCT
 ### Setting Up the Repository
 
 1. **Clone the repository**:
+
    ```bash
    git clone https://github.com/jolterjs/jolter.git
    cd jolter
    ```
 
 2. **Build the workspace**:
+
    ```bash
    cargo build --workspace --all-targets --locked
    ```
@@ -45,26 +47,31 @@ All contributors are expected to adhere to our [Code of Conduct](CODE_OF_CONDUCT
 Before opening a pull request, run all quality checks to ensure continuous integration passes:
 
 ### 1. Code Formatting
+
 ```bash
 cargo fmt --all -- --check
 ```
 
 ### 2. Clippy Lints
+
 ```bash
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 ### 3. Tests
+
 ```bash
 cargo test --workspace --all-targets --locked
 ```
 
 ### 4. Test Coverage (Optional)
+
 ```bash
 cargo llvm-cov --workspace --all-targets --locked --fail-under-lines 80
 ```
 
 ### 5. Dependency Audit
+
 ```bash
 cargo audit
 ```
@@ -76,12 +83,14 @@ cargo audit
 To avoid modifying your personal `$HOME/.jolter` directory during development, run Jolter using an isolated directory:
 
 **Bash / Zsh (Linux & macOS)**:
+
 ```bash
 export JOLTER_HOME="$(mktemp -d)"
 cargo run -p jolter-cli --bin jolter -- use node@24
 ```
 
 **PowerShell (Windows)**:
+
 ```powershell
 $env:JOLTER_HOME = Join-Path $env:TEMP "jolter-dev"
 cargo run -p jolter-cli --bin jolter -- use node@24

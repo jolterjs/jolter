@@ -3,7 +3,7 @@
 Last updated: July 25, 2026
 
 This roadmap is the implementation plan and records the repository's
-current development state. It is intended to be the source of truth 
+current development state. It is intended to be the source of truth
 for project status, sequencing, and release readiness.
 
 ## Project Position
@@ -151,16 +151,16 @@ Runtime, tool, and plugin requirements are resolved independently, allowing a pr
 | Command                           | Status                         | Current behavior                                                                                                                    |
 | --------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `jolter use <tool>`               | Complete                       | Installs or reuses a runtime, tool, or plugin tool, activates it, and installs shims. Tools require active Node.js.                 |
-| `jolter pin <runtime-or-tool>`    | Complete                       | Writes a runtime, tool, or plugin tool requirement to `jolter.json` while preserving other entries.                                  |
+| `jolter pin <runtime-or-tool>`    | Complete                       | Writes a runtime, tool, or plugin tool requirement to `jolter.json` while preserving other entries.                                 |
 | `jolter update [target]`          | Complete                       | Updates an active runtime or tool within its major line, accepts explicit selectors, and supports `--all`.                          |
-| `jolter plugin install <target>`  | Complete                       | Resolves, downloads, verifies SHA-256 integrity, and installs a WASM plugin globally from the Jolter Registry.                     |
+| `jolter plugin install <target>`  | Complete                       | Resolves, downloads, verifies SHA-256 integrity, and installs a WASM plugin globally from the Jolter Registry.                      |
 | `jolter plugin list [--json]`     | Complete                       | Lists installed WASM plugins, canonical names, versions, paths, and status in table or JSON format.                                 |
 | `jolter plugin update [name]`     | Complete                       | Updates installed WASM plugins to their highest matching version selectors, supporting single targets or `--all`.                   |
 | `jolter plugin remove <name>`     | Complete                       | Safely removes an installed WASM plugin with active shim protection.                                                                |
 | `jolter setup`                    | Complete                       | Installs shims and prints exact current-session and persistent `PATH` commands for PowerShell, Command Prompt, Bash, Zsh, and Fish. |
 | `jolter list`                     | Complete for current artifacts | Lists runtimes, managed tools, and installed plugins, active markers, paths, and readiness.                                         |
-| `jolter doctor`                   | Complete for stable core       | Probes versions, validates manifests, WASM component integrity, engine compatibility, detects conflicts, and emits JSON/text.     |
-| `jolter repair`                   | Complete for current artifacts | Reinstalls incomplete runtime, tool, and plugin installations (`--yes` auto-installs missing plugins).                               |
+| `jolter doctor`                   | Complete for stable core       | Probes versions, validates manifests, WASM component integrity, engine compatibility, detects conflicts, and emits JSON/text.       |
+| `jolter repair`                   | Complete for current artifacts | Reinstalls incomplete runtime, tool, and plugin installations (`--yes` auto-installs missing plugins).                              |
 | `jolter sync`                     | Complete for current schema    | Synchronizes project runtimes, tools, and plugins (`--yes` auto-installs missing plugins).                                          |
 | `jolter uninstall <tool@version>` | Complete                       | Removes exact versions with active-toolchain protection and shared installer locks.                                                 |
 | `jolter prune`                    | Complete                       | Preserves active, project-required, and configured newest versions; supports dry runs.                                              |
@@ -281,13 +281,13 @@ Implemented:
 | Reproducible sync       | Complete for current schema     | Runtime, tool, and plugin selectors are synchronized (`--yes` flag auto-installs plugins).                                                 |
 | Doctor                  | Complete for stable core        | Version probes, manifests, engine checks, WASM component checks, conflicts, permissions, and remediation are implemented.                  |
 | Repair                  | Complete for current artifacts  | Incomplete runtime, tool, and plugin directories are replaced safely.                                                                      |
-| Security requirements   | Complete for current providers  | HTTPS, SHA-256/SRI integrity checks, WASM sandboxing, bounded extraction, and no telemetry.                                               |
+| Security requirements   | Complete for current providers  | HTTPS, SHA-256/SRI integrity checks, WASM sandboxing, bounded extraction, and no telemetry.                                                |
 | Telemetry               | Complete by absence             | No telemetry is collected. Opt-in telemetry is not implemented.                                                                            |
-| Cross-platform support  | Complete                        | Native and WSL workflows pass on supported platform matrix.                                                                               |
+| Cross-platform support  | Complete                        | Native and WSL workflows pass on supported platform matrix.                                                                                |
 | 80% coverage target     | Complete                        | Measured line coverage exceeds target, enforced by CI.                                                                                     |
 | Extended tool providers | Complete                        | Custom tool provision fully supported via WASM plugins.                                                                                    |
-| CI setup command        | Complete                        | Synchronizes runtimes, tools, and plugins; emits provider-neutral JSON plus GitHub Actions outputs.                                         |
-| Plugin system           | Complete                        | WASM Component Model runtime (`wasmtime`), `@jolter/jdt` toolkit, `registry-server`, `registry-web`, `register-release-action`.           |
+| CI setup command        | Complete                        | Synchronizes runtimes, tools, and plugins; emits provider-neutral JSON plus GitHub Actions outputs.                                        |
+| Plugin system           | Complete                        | WASM Component Model runtime (`wasmtime`), `@jolter/jdt` toolkit, `registry-server`, `registry-web`, `register-release-action`.            |
 
 ## Release Roadmap
 
