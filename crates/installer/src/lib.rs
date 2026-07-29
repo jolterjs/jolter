@@ -3401,7 +3401,7 @@ mod tests {
             Err(InstallerError::UnsafeArchivePath(_))
         ));
         assert!(matches!(
-            stripped_relative(Path::new("C:\\windows\\system32"), 0),
+            stripped_relative(Path::new("/etc/passwd"), 0),
             Err(InstallerError::UnsafeArchivePath(_))
         ));
         assert!(stripped_relative(Path::new("valid/sub/path.txt"), 0).is_ok());
