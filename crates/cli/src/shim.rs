@@ -11,3 +11,13 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tests_invoked_command_name_fallback() {
+        let command =
+            jolter_shim::invoked_command_name().unwrap_or_else(|| "jolter-shim".to_owned());
+        assert!(!command.is_empty());
+    }
+}

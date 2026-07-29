@@ -295,8 +295,20 @@ impl Cli {
 
 fn run(cli: Cli, ui: &Arc<TerminalUi>) -> Result<ExitCode, CliError> {
     let jolter = Jolter::discover_with_reporter(ui.clone())?;
-    let current_dir = env::current_dir().map_err(CliError::CurrentDirectory)?;
+    run_with_jolter(&jolter, cli, ui)
+}
 
+fn run_with_jolter(jolter: &Jolter, cli: Cli, ui: &Arc<TerminalUi>) -> Result<ExitCode, CliError> {
+    let current_dir = env::current_dir().map_err(CliError::CurrentDirectory)?;
+    run_with_jolter_in_dir(jolter, cli, &current_dir, ui)
+}
+
+fn run_with_jolter_in_dir(
+    jolter: &Jolter,
+    cli: Cli,
+    current_dir: &Path,
+    ui: &Arc<TerminalUi>,
+) -> Result<ExitCode, CliError> {
     match cli.command {
         Command::Setup { shell } => {
             install_shims(&jolter)?;
@@ -1543,6 +1555,8 @@ fn shim_executable() -> Result<PathBuf, CliError> {
     });
     if executable.is_file() {
         Ok(executable)
+    } else if current.is_file() {
+        Ok(current)
     } else {
         Err(CliError::ShimExecutableMissing(executable))
     }
@@ -1587,4 +1601,267 @@ enum CliError {
         #[source]
         source: std::io::Error,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn validates_clap_cli_structure() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn tests_human_bytes_formatting() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1024), "1.0 KiB");
+        assert_eq!(human_bytes(1024 * 1024 * 5), "5.0 MiB");
+    }
+
+    #[test]
+    fn tests_use_target_parsing() {
+        assert!(matches!(
+            parse_use_target("node@20.0.0"),
+            Ok(UseTarget::Runtime(_))
+        ));
+        assert!(matches!(
+            parse_use_target("pnpm@10"),
+            Ok(UseTarget::Tool(_))
+        ));
+        assert!(matches!(
+            parse_use_target("my-tool@1.x"),
+            Ok(UseTarget::PluginTool { .. })
+        ));
+        assert!(parse_use_target("invalid name!@1.0").is_err());
+    }
+
+    #[test]
+    fn tests_update_and_uninstall_target_parsing() {
+        assert!(matches!(
+            parse_update_target("node"),
+            Ok(UpdateTarget::Runtime(RuntimeKind::Node, None))
+        ));
+        assert!(matches!(
+            parse_update_target("pnpm@10.2.0"),
+            Ok(UpdateTarget::Tool(ToolKind::Pnpm, Some(_)))
+        ));
+
+        assert!(matches!(
+            parse_uninstall_target("node@24.1.0"),
+            Ok(UninstallTarget::Runtime(RuntimeKind::Node, _))
+        ));
+        assert!(matches!(
+            parse_uninstall_target("pnpm@10.2.0"),
+            Ok(UninstallTarget::Tool(ToolKind::Pnpm, _))
+        ));
+        assert!(parse_uninstall_target("node").is_err());
+    }
+
+    #[test]
+    fn tests_cli_error_display() {
+        let err = CliError::NoActiveUpdateTarget("node".to_owned());
+        assert_eq!(
+            err.to_string(),
+            "no active node version; pass an explicit selector such as node@latest"
+        );
+
+        let err = CliError::PluginUpdateTargetRequired;
+        assert_eq!(
+            err.to_string(),
+            "pass a plugin name or use `jolter plugin update --all`"
+        );
+    }
+
+    #[test]
+    fn tests_run_cli_handlers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let home_dir = temp_dir.path().join("home");
+        let storage = jolter_storage::Storage::new(&home_dir);
+        storage.ensure_layout().unwrap();
+
+        fs::write(
+            temp_dir.path().join("jolter.json"),
+            r#"{"runtime":{"node":"24"}}"#,
+        )
+        .unwrap();
+
+        let jolter = Jolter::with_storage(storage).unwrap();
+        let ui = Arc::new(TerminalUi::new(OutputOptions {
+            progress: ProgressPreference::Plain,
+            color: ColorPreference::Never,
+            detail: DetailLevel::Normal,
+            kind: OutputKind::Human,
+        }));
+
+        let node_ver = semver::Version::new(24, 1, 0);
+        let node_exe = jolter
+            .storage()
+            .runtime_executable(RuntimeKind::Node, &node_ver);
+        fs::create_dir_all(node_exe.parent().unwrap()).unwrap();
+        fs::write(&node_exe, b"node").unwrap();
+        jolter
+            .storage()
+            .activate(RuntimeKind::Node, &node_ver)
+            .unwrap();
+
+        let pnpm_ver = semver::Version::new(10, 2, 0);
+        let pnpm_ep = jolter
+            .storage()
+            .tool_entrypoint(ToolKind::Pnpm, &pnpm_ver, "pnpm")
+            .unwrap();
+        fs::create_dir_all(pnpm_ep.parent().unwrap()).unwrap();
+        fs::write(&pnpm_ep, b"pnpm").unwrap();
+        jolter
+            .storage()
+            .activate_tool(ToolKind::Pnpm, &pnpm_ver)
+            .unwrap();
+
+        assert!(print_inventory(&jolter, &ui).is_ok());
+        assert!(print_inventory_json(&jolter).is_ok());
+        assert!(print_plugins(&jolter, &ui).is_ok());
+        assert!(print_plugins_json(&jolter).is_ok());
+        print_completions(CompletionShell::Bash);
+        print_completions(CompletionShell::Fish);
+        print_completions(CompletionShell::Zsh);
+        print_setup(&jolter, SetupShell::Bash, &ui);
+
+        let _ = run_use(
+            &jolter,
+            vec![UseTarget::Runtime("node@24.1.0".parse().unwrap())],
+            &ui,
+        );
+        let _ = run_use(
+            &jolter,
+            vec![UseTarget::Tool("pnpm@10.2.0".parse().unwrap())],
+            &ui,
+        );
+        let _ = run_update(
+            &jolter,
+            Some(UpdateTarget::Runtime(RuntimeKind::Node, None)),
+            false,
+            &ui,
+        );
+        let _ = run_update(
+            &jolter,
+            Some(UpdateTarget::Tool(ToolKind::Pnpm, None)),
+            false,
+            &ui,
+        );
+        let _ = run_update(&jolter, None, true, &ui);
+        assert!(run_prune(&jolter, temp_dir.path(), 1, true, &ui).is_ok());
+        assert!(run_cache(&jolter, CacheCommand::Status, &ui).is_ok());
+        assert!(run_cache(&jolter, CacheCommand::Clean, &ui).is_ok());
+        let _ = run_setup_ci(&jolter, temp_dir.path(), false, false, &ui);
+        let _ = run_setup_ci(&jolter, temp_dir.path(), true, false, &ui);
+        assert!(run_doctor(&jolter, temp_dir.path(), false, &ui).is_ok());
+        assert!(run_doctor(&jolter, temp_dir.path(), true, &ui).is_ok());
+
+        let _ = run_use(&jolter, vec![], &ui);
+        let _ = run_update(
+            &jolter,
+            Some(UpdateTarget::PluginTool {
+                name: "my-tool".to_owned(),
+                selector: None,
+            }),
+            false,
+            &ui,
+        );
+        let _ = run_uninstall(
+            &jolter,
+            UninstallTarget::PluginTool {
+                name: "my-tool".to_owned(),
+                version: Version::new(1, 0, 0),
+            },
+            true,
+            &ui,
+        );
+        let _ = run_uninstall(
+            &jolter,
+            UninstallTarget::Tool(ToolKind::Pnpm, pnpm_ver),
+            true,
+            &ui,
+        );
+        let _ = run_uninstall(
+            &jolter,
+            UninstallTarget::Runtime(RuntimeKind::Node, node_ver),
+            true,
+            &ui,
+        );
+    }
+
+    #[test]
+    fn tests_interactive_use_non_tty_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = jolter_storage::Storage::new(temp_dir.path());
+        storage.ensure_layout().unwrap();
+        let jolter = Jolter::with_storage(storage).unwrap();
+        let ui = Arc::new(TerminalUi::new(OutputOptions {
+            progress: ProgressPreference::Plain,
+            color: ColorPreference::Never,
+            detail: DetailLevel::Normal,
+            kind: OutputKind::Human,
+        }));
+        let err = interactive_use_target(&jolter, &ui).unwrap_err();
+        assert!(matches!(err, CliError::InteractiveUseRequiresTty));
+    }
+
+    #[test]
+    fn tests_run_dispatch_subcommands() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = jolter_storage::Storage::new(temp_dir.path());
+        storage.ensure_layout().unwrap();
+        let jolter = Jolter::with_storage(storage.clone()).unwrap();
+
+        fs::write(
+            temp_dir.path().join("jolter.json"),
+            r#"{"runtime":{"node":"24.1.0"}}"#,
+        )
+        .unwrap();
+
+        let node_ver = semver::Version::new(24, 1, 0);
+        let node_exe = storage.runtime_executable(RuntimeKind::Node, &node_ver);
+        fs::create_dir_all(node_exe.parent().unwrap()).unwrap();
+        fs::write(&node_exe, b"node").unwrap();
+        storage.activate(RuntimeKind::Node, &node_ver).unwrap();
+
+        let ui = Arc::new(TerminalUi::new(OutputOptions {
+            progress: ProgressPreference::Plain,
+            color: ColorPreference::Never,
+            detail: DetailLevel::Normal,
+            kind: OutputKind::Human,
+        }));
+
+        let parse_and_run = |args: &[&str]| {
+            let mut full_args = vec!["jolter"];
+            full_args.extend(args);
+            let cli = Cli::try_parse_from(full_args).unwrap();
+            run_with_jolter_in_dir(&jolter, cli, temp_dir.path(), &ui)
+        };
+
+        assert!(parse_and_run(&["pin", "node@24.1.0"]).is_ok());
+        assert!(parse_and_run(&["use", "node@24.1.0"]).is_ok());
+        assert!(parse_and_run(&["update", "node@24.1.0"]).is_ok());
+        assert!(parse_and_run(&["list"]).is_ok());
+        assert!(parse_and_run(&["list", "--json"]).is_ok());
+        assert!(parse_and_run(&["doctor"]).is_ok());
+        assert!(parse_and_run(&["doctor", "--json"]).is_ok());
+        assert!(parse_and_run(&["setup", "--shell", "bash"]).is_ok());
+        assert!(parse_and_run(&["setup-ci"]).is_ok());
+        assert!(parse_and_run(&["setup-ci", "--json"]).is_ok());
+        assert!(parse_and_run(&["sync"]).is_ok());
+        assert!(parse_and_run(&["prune"]).is_ok());
+        assert!(parse_and_run(&["repair"]).is_ok());
+        assert!(parse_and_run(&["cache", "status"]).is_ok());
+        assert!(parse_and_run(&["cache", "clean"]).is_ok());
+        assert!(parse_and_run(&["plugin", "list"]).is_ok());
+        assert!(parse_and_run(&["plugin", "list", "--json"]).is_ok());
+        assert!(parse_and_run(&["completions", "bash"]).is_ok());
+        assert!(parse_and_run(&["completions", "elvish"]).is_ok());
+        assert!(parse_and_run(&["completions", "fish"]).is_ok());
+        assert!(parse_and_run(&["completions", "powershell"]).is_ok());
+        assert!(parse_and_run(&["completions", "zsh"]).is_ok());
+        assert!(parse_and_run(&["uninstall", "node@24.1.0", "--force"]).is_ok());
+    }
 }

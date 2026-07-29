@@ -1608,4 +1608,152 @@ mod tests {
             .unwrap();
         assert_eq!(storage.active_tool_version(ToolKind::Pnpm).unwrap(), None);
     }
+
+    #[test]
+    fn tests_pin_plugin_and_list() {
+        let project = tempfile::tempdir().unwrap();
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        storage.ensure_layout().unwrap();
+        let jolter = Jolter::with_storage(storage.clone()).unwrap();
+
+        jolter
+            .pin_plugin(project.path(), "my-plugin", "1.x")
+            .unwrap();
+        let config = jolter_config::ProjectConfig::from_path(
+            &project.path().join(jolter_config::CONFIG_FILE_NAME),
+        )
+        .unwrap();
+        assert_eq!(config.plugins.get("my-plugin").unwrap(), "1.x");
+    }
+
+    #[test]
+    fn tests_listing_doctor_and_pinning_methods() {
+        let project = tempfile::tempdir().unwrap();
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        storage.ensure_layout().unwrap();
+        let jolter = Jolter::with_storage(storage.clone()).unwrap();
+
+        assert!(jolter.list().unwrap().is_empty());
+        assert!(jolter.list_tools().unwrap().is_empty());
+        assert!(jolter.list_plugin_tools().unwrap().is_empty());
+        assert!(jolter.list_plugins().unwrap().is_empty());
+
+        let report = jolter.doctor(project.path()).unwrap();
+        assert!(report.is_healthy());
+
+        // Pin runtime, tool, and plugin
+        let node_req: RuntimeRequest = "node@20".parse().unwrap();
+        jolter.pin_runtime(project.path(), &node_req).unwrap();
+
+        let pnpm_req: ToolRequest = "pnpm@10".parse().unwrap();
+        jolter.pin_tool(project.path(), &pnpm_req).unwrap();
+
+        let config_path = project.path().join(jolter_config::CONFIG_FILE_NAME);
+        let config = jolter_config::ProjectConfig::from_path(&config_path).unwrap();
+        assert_eq!(config.runtime.node, Some("20".to_owned()));
+        assert_eq!(config.tools.get("pnpm"), Some(&"10".to_owned()));
+    }
+
+    #[test]
+    fn tests_uninstall_plugin_and_plugin_tool_error_paths() {
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        storage.ensure_layout().unwrap();
+        let jolter = Jolter::with_storage(storage).unwrap();
+
+        let err = jolter
+            .uninstall_plugin("@scoped/missing", true)
+            .unwrap_err();
+        assert!(matches!(err, CoreError::PluginNotInstalled(_)));
+
+        let v1 = Version::new(1, 0, 0);
+        let err = jolter
+            .uninstall_plugin_tool("prov", "tool", &v1, true)
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Installer(_)));
+    }
+
+    #[test]
+    fn tests_core_prune_cache_and_sync_methods() {
+        let project = tempfile::tempdir().unwrap();
+        let storage_temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(storage_temp.path());
+        storage.ensure_layout().unwrap();
+
+        fs::write(
+            project.path().join("jolter.json"),
+            r#"{"runtime":{"node":"24"}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(storage.cache_dir().join("downloads")).unwrap();
+        fs::write(
+            storage.cache_dir().join("downloads").join("cached.tar.gz"),
+            b"cached data",
+        )
+        .unwrap();
+
+        let jolter = Jolter::with_storage(storage.clone()).unwrap();
+
+        let stats = jolter.cache_stats().unwrap();
+        assert_eq!(stats.files, 1);
+
+        let clean = jolter.clean_cache().unwrap();
+        assert_eq!(clean.removed_files, 1);
+
+        let prune = jolter.prune(project.path(), 0, false).unwrap();
+        assert!(prune.removed.is_empty());
+
+        let sync_res = jolter.sync(project.path());
+        assert!(sync_res.is_ok());
+
+        let repair_res = jolter.repair(project.path());
+        assert!(repair_res.is_ok());
+    }
+
+    #[test]
+    fn tests_core_prune_and_uninstall_methods() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+
+        let v1 = Version::new(24, 0, 0);
+        let v2 = Version::new(24, 1, 0);
+
+        let exe1 = storage.runtime_executable(RuntimeKind::Node, &v1);
+        fs::create_dir_all(exe1.parent().unwrap()).unwrap();
+        fs::write(&exe1, b"node").unwrap();
+
+        let exe2 = storage.runtime_executable(RuntimeKind::Node, &v2);
+        fs::create_dir_all(exe2.parent().unwrap()).unwrap();
+        fs::write(&exe2, b"node").unwrap();
+
+        let jolter = Jolter::with_storage(storage.clone()).unwrap();
+        let request: jolter_runtime::RuntimeRequest = "node@24.1.0".parse().unwrap();
+        jolter.use_runtime(&request).unwrap();
+
+        let prune = jolter.prune(project.path(), 0, false).unwrap();
+        assert_eq!(prune.removed.len(), 1);
+        assert_eq!(prune.removed[0].version, v1);
+
+        let uninst_err = jolter.uninstall_runtime(RuntimeKind::Node, &v2, false);
+        assert!(uninst_err.is_err());
+
+        let uninst_ok = jolter.uninstall_runtime(RuntimeKind::Node, &v2, true);
+        assert!(uninst_ok.is_ok());
+    }
+
+    #[test]
+    fn tests_core_error_display() {
+        let err = CoreError::PluginNotInstalled("my-plugin".to_owned());
+        assert_eq!(err.to_string(), "plugin `my-plugin` is not installed");
+
+        let err = CoreError::NoActivePluginTool("my-tool".to_owned());
+        assert_eq!(
+            err.to_string(),
+            "no active plugin tool `my-tool`; pass an explicit selector such as my-tool@latest"
+        );
+    }
 }

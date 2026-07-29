@@ -3331,4 +3331,114 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn tests_manifest_writing_and_error_display() {
+        let temp = tempfile::tempdir().unwrap();
+        let release = Release {
+            kind: RuntimeKind::Node,
+            version: Version::new(20, 0, 0),
+            artifact: Artifact {
+                url: "https://nodejs.org/dist/v20.0.0/node-v20.0.0-win-x64.zip".to_owned(),
+                integrity: ArtifactIntegrity::Sha256("a".repeat(64)),
+                file_name: "node.zip".to_owned(),
+                format: ArchiveFormat::Zip,
+                strip_components: 1,
+            },
+        };
+
+        write_manifest(temp.path(), &release).unwrap();
+        assert!(temp.path().join(".jolter-install.json").is_file());
+
+        let tool_release = ToolRelease {
+            kind: ToolKind::Pnpm,
+            version: Version::new(10, 0, 0),
+            artifact: Artifact {
+                url: "https://registry.npmjs.org/pnpm/-/pnpm-10.0.0.tgz".to_owned(),
+                integrity: ArtifactIntegrity::Sha256("b".repeat(64)),
+                file_name: "pnpm.tgz".to_owned(),
+                format: ArchiveFormat::TarGz,
+                strip_components: 1,
+            },
+            node_engine: Some(">=18".to_owned()),
+            expected_hash: None,
+        };
+
+        write_tool_manifest(temp.path(), &tool_release).unwrap();
+        assert!(temp.path().join(".jolter-tool.json").is_file());
+
+        let plugin_tool_archive = PluginToolArchive {
+            provider: "my-provider".to_owned(),
+            tool: "my-tool".to_owned(),
+            version: Version::new(1, 0, 0),
+            artifact: Artifact {
+                url: "https://example.test/tool.zip".to_owned(),
+                integrity: ArtifactIntegrity::Sha256("c".repeat(64)),
+                file_name: "tool.zip".to_owned(),
+                format: ArchiveFormat::Zip,
+                strip_components: 0,
+            },
+            commands: vec!["my-tool".to_owned()],
+        };
+
+        write_plugin_tool_manifest(temp.path(), &plugin_tool_archive).unwrap();
+        assert!(temp.path().join(".jolter-plugin-tool.json").is_file());
+
+        let err = InstallerError::InsecureUrl("http://insecure.test".to_owned());
+        assert_eq!(
+            err.to_string(),
+            "refusing non-HTTPS URL `http://insecure.test`"
+        );
+
+        let err = InstallerError::ArchiveSizeLimit;
+        assert_eq!(err.to_string(), "archive exceeded the extracted size limit");
+    }
+
+    #[test]
+    fn tests_unsafe_archive_paths_and_urls() {
+        assert!(matches!(
+            stripped_relative(Path::new("../outside.txt"), 0),
+            Err(InstallerError::UnsafeArchivePath(_))
+        ));
+        assert!(matches!(
+            stripped_relative(Path::new("C:\\windows\\system32"), 0),
+            Err(InstallerError::UnsafeArchivePath(_))
+        ));
+        assert!(stripped_relative(Path::new("valid/sub/path.txt"), 0).is_ok());
+
+        assert!(ensure_https("https://secure.test").is_ok());
+        assert!(matches!(
+            ensure_https("http://insecure.test"),
+            Err(InstallerError::InsecureUrl(_))
+        ));
+    }
+
+    #[test]
+    fn tests_retry_helpers() {
+        assert!(retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(retryable_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(retryable_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(retryable_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
+        assert!(retryable_status(reqwest::StatusCode::REQUEST_TIMEOUT));
+        assert!(retryable_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(!retryable_status(reqwest::StatusCode::OK));
+        assert!(!retryable_status(reqwest::StatusCode::NOT_FOUND));
+
+        // Exponential backoff: 250ms * 2^attempt
+        let delay0 = retry_delay(0, None);
+        assert_eq!(delay0, std::time::Duration::from_millis(250));
+        let delay1 = retry_delay(1, None);
+        assert_eq!(delay1, std::time::Duration::from_millis(500));
+        let delay2 = retry_delay(2, None);
+        assert_eq!(delay2, std::time::Duration::from_millis(1000));
+
+        // Retry-After header is respected (clamped to MAX_RETRY_AFTER = 5s)
+        let header = reqwest::header::HeaderValue::from_static("3");
+        let delay_header = retry_delay(0, Some(&header));
+        assert_eq!(delay_header, std::time::Duration::from_secs(3));
+
+        let header_large = reqwest::header::HeaderValue::from_static("60");
+        let delay_clamped = retry_delay(0, Some(&header_large));
+        assert_eq!(delay_clamped, MAX_RETRY_AFTER);
+    }
 }

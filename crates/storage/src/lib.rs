@@ -1331,4 +1331,160 @@ mod tests {
             CacheStats::default()
         );
     }
+
+    #[test]
+    fn tests_deactivate_plugin_tools_and_removal() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+
+        let v1 = Version::new(1, 0, 0);
+        storage
+            .activate_plugin_tool("my-provider", "my-tool", &v1)
+            .unwrap();
+
+        let active = storage.active_plugin_tool("my-tool").unwrap().unwrap();
+        assert_eq!(active.provider, "my-provider");
+        assert_eq!(active.version, v1);
+
+        assert!(
+            !storage
+                .deactivate_plugin_tool("my-tool", Some(&Version::new(2, 0, 0)))
+                .unwrap()
+        );
+        assert!(
+            storage
+                .deactivate_plugin_tool("my-tool", Some(&v1))
+                .unwrap()
+        );
+        assert_eq!(storage.active_plugin_tool("my-tool").unwrap(), None);
+    }
+
+    #[test]
+    fn tests_installed_runtimes_and_tools_accessors() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+
+        let node_v = Version::new(20, 0, 0);
+        let runtime = InstalledRuntime {
+            kind: RuntimeKind::Node,
+            version: node_v.clone(),
+            path: storage.runtime_version_dir(RuntimeKind::Node, &node_v),
+        };
+        assert!(runtime.executable().to_string_lossy().contains("node"));
+
+        let tool_v = Version::new(10, 0, 0);
+        let tool = InstalledTool {
+            kind: ToolKind::Pnpm,
+            version: tool_v.clone(),
+            path: storage.tool_version_dir(ToolKind::Pnpm, &tool_v),
+        };
+        assert!(!tool.is_complete());
+        assert!(tool.primary_entrypoint().is_some());
+    }
+
+    #[test]
+    fn tests_plugin_storage_discovery_and_manifest_reading() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+
+        let plugin_dir = storage
+            .plugins_dir()
+            .join("scope")
+            .join("my-plugin")
+            .join("v1.0.0");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join(".jolter-plugin.json"), b"{}").unwrap();
+
+        let plugins = storage.installed_plugins().unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].canonical_name, "@scope/my-plugin");
+
+        let found = storage
+            .find_matching_plugin("@scope/my-plugin", "1.x")
+            .unwrap();
+        assert!(found.is_some());
+
+        let pt_dir = storage
+            .plugin_tools_dir()
+            .join("scope")
+            .join("my-plugin")
+            .join("my-tool")
+            .join("1.0.0");
+        fs::create_dir_all(&pt_dir).unwrap();
+        fs::write(
+            pt_dir.join(".jolter-plugin-tool.json"),
+            r#"{"commands":["my-tool"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            pt_dir.join(if cfg!(windows) {
+                "my-tool.exe"
+            } else {
+                "my-tool"
+            }),
+            b"tool",
+        )
+        .unwrap();
+
+        let plugin_tools = storage.installed_plugin_tools().unwrap();
+        assert_eq!(plugin_tools.len(), 1);
+        assert_eq!(plugin_tools[0].provider, "@scope/my-plugin");
+        assert_eq!(plugin_tools[0].tool, "my-tool");
+
+        let found_pt = storage
+            .find_matching_plugin_tool("@scope/my-plugin", "my-tool", "1.x")
+            .unwrap();
+        assert!(found_pt.is_some());
+
+        // Test find_matching for RuntimeRequest
+        let node_v = Version::new(24, 1, 0);
+        let node_exe = storage.runtime_executable(RuntimeKind::Node, &node_v);
+        fs::create_dir_all(node_exe.parent().unwrap()).unwrap();
+        fs::write(&node_exe, b"node").unwrap();
+
+        let req: jolter_runtime::RuntimeRequest = "node@24.1.0".parse().unwrap();
+        let found_rt = storage.find_matching(&req).unwrap();
+        assert!(found_rt.is_some());
+
+        let req_prefix: jolter_runtime::RuntimeRequest = "node@24".parse().unwrap();
+        let found_rt_prefix = storage.find_matching(&req_prefix).unwrap();
+        assert!(found_rt_prefix.is_some());
+
+        // Test find_matching_tool for ToolRequest
+        let pnpm_v = Version::new(10, 2, 0);
+        let pnpm_ep = storage
+            .tool_entrypoint(ToolKind::Pnpm, &pnpm_v, "pnpm")
+            .unwrap();
+        fs::create_dir_all(pnpm_ep.parent().unwrap()).unwrap();
+        fs::write(&pnpm_ep, b"pnpm").unwrap();
+
+        let tool_req: jolter_runtime::ToolRequest = "pnpm@10.2.0".parse().unwrap();
+        let found_tl = storage.find_matching_tool(&tool_req).unwrap();
+        assert!(found_tl.is_some());
+
+        let tool_req_prefix: jolter_runtime::ToolRequest = "pnpm@10".parse().unwrap();
+        let found_tl_prefix = storage.find_matching_tool(&tool_req_prefix).unwrap();
+        assert!(found_tl_prefix.is_some());
+    }
+
+    #[test]
+    fn tests_storage_error_display() {
+        let err = StorageError::HomeDirectoryUnavailable;
+        assert_eq!(
+            err.to_string(),
+            "could not determine the user home directory; set JOLTER_HOME explicitly"
+        );
+
+        let err = StorageError::Create {
+            path: PathBuf::from("/bad"),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied"),
+        };
+        assert!(
+            err.to_string()
+                .contains("failed to create storage directory")
+        );
+    }
 }

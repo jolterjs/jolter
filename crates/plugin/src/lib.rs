@@ -93,7 +93,7 @@ pub struct PluginEntrypoint {
     pub path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginProvides {
     #[serde(default)]
     pub tools: BTreeMap<String, PluginToolDefinition>,
@@ -1011,5 +1011,351 @@ mod tests {
             ),
             Err(PluginError::SchemaUrlMismatch { .. })
         ));
+    }
+
+    #[derive(Default)]
+    struct MockRegistryHttp {
+        responses: std::sync::Mutex<BTreeMap<String, String>>,
+        downloads: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
+    }
+
+    impl MockRegistryHttp {
+        fn set_text(&self, url: impl Into<String>, content: impl Into<String>) {
+            self.responses
+                .lock()
+                .unwrap()
+                .insert(url.into(), content.into());
+        }
+
+        fn set_download(&self, url: impl Into<String>, bytes: Vec<u8>) {
+            self.downloads.lock().unwrap().insert(url.into(), bytes);
+        }
+    }
+
+    impl RegistryHttp for MockRegistryHttp {
+        fn get_text(&self, url: &str) -> Result<String, PluginError> {
+            ensure_https(url)?;
+            self.responses
+                .lock()
+                .unwrap()
+                .get(url)
+                .cloned()
+                .ok_or_else(|| PluginError::InsecureUrl(url.to_owned()))
+        }
+
+        fn download(&self, url: &str, destination: &Path) -> Result<(), PluginError> {
+            ensure_https(url)?;
+            let bytes = self
+                .downloads
+                .lock()
+                .unwrap()
+                .get(url)
+                .cloned()
+                .ok_or_else(|| PluginError::InsecureUrl(url.to_owned()))?;
+            fs::write(destination, bytes).map_err(PluginError::Io)
+        }
+    }
+
+    #[test]
+    fn tests_plugin_request_display_and_validation() {
+        let req = PluginRequest::new("eslint", "1.x").unwrap();
+        assert_eq!(format!("{req}"), "eslint@1.x");
+        assert!(PluginRequest::new("invalid name!", "1.0").is_err());
+        assert!(PluginRequest::new("eslint", "invalid selector!").is_err());
+
+        assert!(validate_plugin_name("eslint").is_ok());
+        assert!(validate_plugin_name("@eslint/eslint").is_ok());
+        assert!(validate_plugin_name("invalid name!").is_err());
+        assert!(validate_plugin_name("@foo/bar/baz").is_err());
+
+        assert!(validate_selector("latest").is_ok());
+        assert!(validate_selector("1.x").is_ok());
+        assert!(validate_selector("1.2.3").is_ok());
+        assert!(validate_selector("invalid").is_err());
+    }
+
+    #[test]
+    fn tests_selector_matching_and_urls() {
+        let v1_2_3 = Version::parse("1.2.3").unwrap();
+        assert!(selector_matches("latest", &v1_2_3));
+        assert!(selector_matches("*", &v1_2_3));
+        assert!(selector_matches("1", &v1_2_3));
+        assert!(selector_matches("1.2", &v1_2_3));
+        assert!(selector_matches("1.2.3", &v1_2_3));
+        assert!(!selector_matches("2", &v1_2_3));
+        assert!(!selector_matches("1.3", &v1_2_3));
+
+        assert_eq!(
+            absolute_url("https://registry.test", "https://other.test/wasm").unwrap(),
+            "https://other.test/wasm"
+        );
+        assert_eq!(
+            absolute_url("https://registry.test", "/api/v1/test").unwrap(),
+            "https://registry.test/api/v1/test"
+        );
+        assert!(absolute_url("https://registry.test", "relative/path").is_err());
+
+        assert!(ensure_https("https://secure.test").is_ok());
+        assert!(ensure_https("http://insecure.test").is_err());
+    }
+
+    #[test]
+    fn tests_manifest_validation_error_paths() {
+        let mut manifest = PluginReleaseManifest {
+            schema_url: Some(PLUGIN_RELEASE_SCHEMA_URL.to_owned()),
+            schema_version: 1,
+            name: "@eslint/eslint".to_owned(),
+            version: "1.2.0".to_owned(),
+            jolter: JolterApiRequirement {
+                minimum_version: "0.3.0".to_owned(),
+                api_version: "1".to_owned(),
+            },
+            entrypoint: PluginEntrypoint {
+                kind: "wasm".to_owned(),
+                path: "plugin.wasm".to_owned(),
+            },
+            provides: PluginProvides::default(),
+            permissions: PluginPermissions::default(),
+            artifacts: PluginArtifacts {
+                wasm: WasmArtifact {
+                    file: "plugin.wasm".to_owned(),
+                    sha256: "a".repeat(64),
+                    size: 1,
+                },
+            },
+        };
+
+        manifest.schema_version = 2;
+        assert!(matches!(
+            validate_release_manifest(
+                &manifest,
+                "@eslint/eslint",
+                &Version::parse("1.2.0").unwrap()
+            ),
+            Err(PluginError::UnsupportedSchema(2))
+        ));
+
+        manifest.schema_version = 1;
+        manifest.name = "@eslint/other".to_owned();
+        assert!(matches!(
+            validate_release_manifest(
+                &manifest,
+                "@eslint/eslint",
+                &Version::parse("1.2.0").unwrap()
+            ),
+            Err(PluginError::ManifestIdentity { .. })
+        ));
+
+        manifest.name = "@eslint/eslint".to_owned();
+        manifest.version = "1.3.0".to_owned();
+        assert!(matches!(
+            validate_release_manifest(
+                &manifest,
+                "@eslint/eslint",
+                &Version::parse("1.2.0").unwrap()
+            ),
+            Err(PluginError::ManifestVersion { .. })
+        ));
+
+        manifest.version = "1.2.0".to_owned();
+        manifest.entrypoint.kind = "js".to_owned();
+        assert!(matches!(
+            validate_release_manifest(
+                &manifest,
+                "@eslint/eslint",
+                &Version::parse("1.2.0").unwrap()
+            ),
+            Err(PluginError::InvalidEntrypoint)
+        ));
+
+        manifest.entrypoint.kind = "wasm".to_owned();
+        manifest.artifacts.wasm.sha256 = "invalid_hash".to_owned();
+        assert!(matches!(
+            validate_release_manifest(
+                &manifest,
+                "@eslint/eslint",
+                &Version::parse("1.2.0").unwrap()
+            ),
+            Err(PluginError::InvalidSha256(_))
+        ));
+
+        manifest.artifacts.wasm.sha256 = "a".repeat(64);
+        manifest.permissions.commands = Some(CommandPermissions { execute: true });
+        assert!(matches!(
+            validate_release_manifest(
+                &manifest,
+                "@eslint/eslint",
+                &Version::parse("1.2.0").unwrap()
+            ),
+            Err(PluginError::CommandExecutionUnsupported)
+        ));
+    }
+
+    #[test]
+    fn tests_plugin_manager_lifecycle_with_mock() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("storage"));
+        let http = MockRegistryHttp::default();
+        let registry = "https://registry.test";
+
+        let wasm_bytes = b"fake wasm content";
+        let mut hasher = Sha256::new();
+        hasher.update(wasm_bytes);
+        let wasm_hash = format!("{:x}", hasher.finalize());
+
+        let canonical = "@jolter-test/my-plugin";
+        let request: PluginRequest = canonical.parse().unwrap();
+
+        http.set_text(
+            format!(
+                "{registry}/api/v1/plugins/{}/versions",
+                encode_path(canonical)
+            ),
+            r#"{"latest": "1.0.0", "versions": ["1.0.0"]}"#,
+        );
+        http.set_text(
+            format!(
+                "{registry}/api/v1/plugins/{}/releases/1.0.0",
+                encode_path(canonical)
+            ),
+            r#"{
+                "wasmUrl": "https://registry.test/artifacts/plugin.wasm",
+                "manifestUrl": "https://registry.test/artifacts/plugin.json",
+                "yanked": false
+            }"#,
+        );
+        http.set_text(
+            format!("{registry}/api/v1/plugins/{}", encode_path(canonical)),
+            r#"{"name": "@jolter-test/my-plugin"}"#,
+        );
+        http.set_text(
+            "https://registry.test/artifacts/plugin.json",
+            format!(
+                r#"{{
+                    "$schema": "{PLUGIN_RELEASE_SCHEMA_URL}",
+                    "schemaVersion": 1,
+                    "name": "{canonical}",
+                    "version": "1.0.0",
+                    "jolter": {{ "minimumVersion": "0.3.0", "apiVersion": "1" }},
+                    "entrypoint": {{ "type": "wasm", "path": "plugin.wasm" }},
+                    "provides": {{ "tools": {{ "my-tool": {{ "commands": ["my-cmd"] }} }} }},
+                    "artifacts": {{
+                        "wasm": {{
+                            "file": "plugin.wasm",
+                            "sha256": "{wasm_hash}",
+                            "size": {}
+                        }}
+                    }}
+                }}"#,
+                wasm_bytes.len()
+            ),
+        );
+        http.set_download(
+            "https://registry.test/artifacts/plugin.wasm",
+            wasm_bytes.to_vec(),
+        );
+
+        let manager = PluginManager::with_registry(storage, registry, http);
+
+        let installed = manager.install(&request).unwrap();
+        assert_eq!(installed.canonical_name, canonical);
+        assert_eq!(installed.version, Version::parse("1.0.0").unwrap());
+
+        let manifest = read_installed_manifest(&installed.path).unwrap();
+        assert_eq!(manifest.canonical_name, canonical);
+        assert_eq!(manifest.commands, vec!["my-cmd"]);
+
+        // Test cache hit
+        let cached = manager.install(&request).unwrap();
+        assert_eq!(cached.path, installed.path);
+    }
+
+    #[test]
+    fn tests_plugin_manager_yanked_and_errors() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("storage"));
+        let http = MockRegistryHttp::default();
+        let registry = "https://registry.test";
+
+        let canonical = "@jolter-test/yanked-plugin";
+        let request: PluginRequest = canonical.parse().unwrap();
+
+        http.set_text(
+            format!(
+                "{registry}/api/v1/plugins/{}/versions",
+                encode_path(canonical)
+            ),
+            r#"{"latest": "1.0.0", "versions": ["1.0.0"]}"#,
+        );
+        http.set_text(
+            format!(
+                "{registry}/api/v1/plugins/{}/releases/1.0.0",
+                encode_path(canonical)
+            ),
+            r#"{
+                "wasmUrl": "https://registry.test/artifacts/plugin.wasm",
+                "manifestUrl": "https://registry.test/artifacts/plugin.json",
+                "yanked": true,
+                "deprecationMessage": "deprecated release"
+            }"#,
+        );
+
+        let manager = PluginManager::with_registry(storage, registry, http);
+        let err = manager.install(&request).unwrap_err();
+        assert!(matches!(err, PluginError::YankedVersion { .. }));
+    }
+
+    #[test]
+    fn tests_verify_sha256() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.bin");
+        let bytes = b"hello sha256";
+        fs::write(&file_path, bytes).unwrap();
+
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let expected_hash = format!("{:x}", hasher.finalize());
+
+        assert!(verify_sha256(&file_path, &expected_hash).is_ok());
+        assert!(
+            verify_sha256(
+                &file_path,
+                "0000000000000000000000000000000000000000000000000000000000000000"
+            )
+            .is_err()
+        );
+        assert!(verify_sha256(&temp_dir.path().join("nonexistent.bin"), &expected_hash).is_err());
+    }
+
+    #[test]
+    fn tests_plugin_executor_and_reqwest_http() {
+        let executor = PluginExecutor::new();
+        assert!(executor.is_ok());
+
+        let http = ReqwestRegistryHttp::new();
+        assert!(http.is_ok());
+    }
+
+    #[test]
+    fn tests_plugin_error_display() {
+        let err = PluginError::InvalidName("bad!".to_owned());
+        assert_eq!(err.to_string(), "invalid plugin name `bad!`");
+
+        let err = PluginError::InvalidSelector("bad_sel".to_owned());
+        assert_eq!(err.to_string(), "invalid plugin version selector `bad_sel`");
+
+        let err = PluginError::CommandExecutionUnsupported;
+        assert_eq!(
+            err.to_string(),
+            "plugin command execution permissions are not supported"
+        );
+    }
+
+    #[test]
+    fn tests_plugin_name_validation() {
+        assert!(validate_plugin_name("@scope/valid-name").is_ok());
+        assert!(validate_plugin_name("valid-name").is_ok());
+        assert!(validate_plugin_name("INVALID_NAME!").is_err());
+        assert!(validate_plugin_name("@scope/").is_err());
     }
 }

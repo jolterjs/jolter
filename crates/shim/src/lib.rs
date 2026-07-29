@@ -978,4 +978,50 @@ mod tests {
         assert!(!storage.shims_dir().join("node").exists());
         assert!(!storage.shims_dir().join("node.exe").exists());
     }
+
+    #[test]
+    fn tests_desired_shim_commands_with_all_runtimes_and_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+
+        // Add Deno
+        let deno_ver = Version::new(1, 40, 0);
+        let deno_bin = storage.runtime_executable(RuntimeKind::Deno, &deno_ver);
+        fs::create_dir_all(deno_bin.parent().unwrap()).unwrap();
+        fs::write(&deno_bin, b"deno").unwrap();
+
+        // Add Pnpm tool
+        let pnpm_ver = Version::new(10, 0, 0);
+        let pnpm_ep = storage
+            .tool_entrypoint(ToolKind::Pnpm, &pnpm_ver, "pnpm")
+            .unwrap();
+        fs::create_dir_all(pnpm_ep.parent().unwrap()).unwrap();
+        fs::write(&pnpm_ep, b"pnpm").unwrap();
+
+        // Add Yarn tool
+        let yarn_ver = Version::new(4, 0, 0);
+        let yarn_ep = storage
+            .tool_entrypoint(ToolKind::Yarn, &yarn_ver, "yarn")
+            .unwrap();
+        fs::create_dir_all(yarn_ep.parent().unwrap()).unwrap();
+        fs::write(&yarn_ep, b"yarn").unwrap();
+
+        let commands = desired_shim_commands(&storage).unwrap();
+        assert!(commands.contains("deno"));
+        assert!(commands.contains("pnpm"));
+        assert!(commands.contains("yarn"));
+    }
+
+    #[test]
+    fn tests_shim_error_display() {
+        let err = ShimError::UnsupportedCommand("ruby".to_owned());
+        assert_eq!(err.to_string(), "unsupported shim command `ruby`");
+
+        let err = ShimError::NoActiveRuntime(RuntimeKind::Node);
+        assert_eq!(
+            err.to_string(),
+            "no active node runtime; run `jolter use node@<version>`"
+        );
+    }
 }

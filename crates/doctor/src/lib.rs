@@ -1428,4 +1428,140 @@ mod tests {
         );
         assert!(report.checks.iter().any(|c| c.name == "devEngines: cpu"));
     }
+
+    #[test]
+    fn tests_check_status_report_and_extract_version() {
+        let report = Report {
+            checks: vec![
+                Check::pass("test1", "ok"),
+                Check::warning("test2", "warn", "fix"),
+                Check::fail("test3", "failed", "repair"),
+            ],
+        };
+        assert!(!report.is_healthy());
+
+        assert_eq!(
+            extract_version("node v20.11.0"),
+            Some(Version::new(20, 11, 0))
+        );
+        assert_eq!(
+            extract_version("pnpm 9.1.0, done"),
+            Some(Version::new(9, 1, 0))
+        );
+        assert_eq!(extract_version("no version here"), None);
+
+        let output = ProbeOutput {
+            status: std::process::ExitStatus::default(),
+            stdout: "hello".to_owned(),
+            stderr: "world".to_owned(),
+            timed_out: false,
+        };
+        assert_eq!(output.combined_output(), "hello; world");
+
+        let empty_output = ProbeOutput {
+            status: std::process::ExitStatus::default(),
+            stdout: "".to_owned(),
+            stderr: "".to_owned(),
+            timed_out: false,
+        };
+        assert_eq!(empty_output.combined_output(), "<no output>");
+    }
+
+    #[test]
+    fn tests_valid_manifest_artifact_and_reports() {
+        assert!(valid_manifest_artifact(
+            "https://example.com/file.tar.gz",
+            "sha256-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        ));
+        assert!(!valid_manifest_artifact(
+            "http://insecure.com/file.tar.gz",
+            "sha256-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        ));
+        assert!(!valid_manifest_artifact(
+            "https://example.com/file.tar.gz",
+            "invalid-hash"
+        ));
+
+        let report = Report {
+            checks: vec![
+                Check::pass("Check 1", "pass detail"),
+                Check::warning("Check 2", "warn detail", "warn action"),
+                Check::fail("Check 3", "fail detail", "fail action"),
+            ],
+        };
+        assert!(!report.is_healthy());
+        assert_eq!(report.checks.len(), 3);
+        assert_eq!(report.checks[0].status, CheckStatus::Pass);
+        assert_eq!(report.checks[1].status, CheckStatus::Warning);
+        assert_eq!(report.checks[2].status, CheckStatus::Fail);
+        assert_eq!(report.checks[2].remediation.as_deref(), Some("fail action"));
+    }
+
+    #[test]
+    fn tests_tool_engine_check() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = InstalledTool {
+            kind: ToolKind::Pnpm,
+            version: Version::new(10, 0, 0),
+            path: temp.path().to_path_buf(),
+        };
+        let node_v = Version::new(20, 0, 0);
+
+        // Missing package.json -> Warning
+        let check = tool_engine_check(&tool, &node_v);
+        assert_eq!(check.status, CheckStatus::Warning);
+
+        // Invalid package.json -> Fail
+        fs::write(temp.path().join("package.json"), b"invalid json").unwrap();
+        let check = tool_engine_check(&tool, &node_v);
+        assert_eq!(check.status, CheckStatus::Fail);
+
+        // Valid package.json with node restriction -> Pass
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{"engines":{"node":">=18.0.0"}}"#,
+        )
+        .unwrap();
+        let check = tool_engine_check(&tool, &node_v);
+        assert_eq!(check.status, CheckStatus::Pass);
+
+        // Incompatible node version restriction -> Fail
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{"engines":{"node":">=22.0.0"}}"#,
+        )
+        .unwrap();
+        let check = tool_engine_check(&tool, &node_v);
+        assert_eq!(check.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn tests_dev_engines_mismatch_and_modes() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::new(home.path());
+        storage.ensure_layout().unwrap();
+
+        fs::write(
+            project.path().join("package.json"),
+            r#"{
+                "devEngines": {
+                    "runtime": { "name": "node", "version": "<10.0.0", "onFail": "warn" },
+                    "cpu": { "name": "!x64", "onFail": "warn" },
+                    "os": { "name": "nonexistent_os", "onFail": "error" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let report = examine(project.path(), &storage).unwrap();
+        assert!(!report.is_healthy());
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.status == CheckStatus::Warning)
+        );
+        assert!(report.checks.iter().any(|c| c.status == CheckStatus::Fail));
+    }
 }
