@@ -43,13 +43,13 @@ jobs:
           mkdir -p "$project"
 
           cat > "$project/jolter.json" << 'EOF'
-{
-  "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
-  "schemaVersion": 2,
-  "runtime": { "node": "lts" },
-  "tools": { "pnpm": "latest" }
-}
-EOF
+          {
+            "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
+            "schemaVersion": 2,
+            "runtime": { "node": "lts" },
+            "tools": { "pnpm": "latest" }
+          }
+          EOF
 
           cd "$project"
 
@@ -94,13 +94,13 @@ EOF
           New-Item -ItemType Directory -Force $project | Out-Null
 
           @'
-{
-  "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
-  "schemaVersion": 2,
-  "runtime": { "node": "lts" },
-  "tools": { "pnpm": "latest" }
-}
-'@ | Set-Content (Join-Path $project "jolter.json")
+          {
+            "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
+            "schemaVersion": 2,
+            "runtime": { "node": "lts" },
+            "tools": { "pnpm": "latest" }
+          }
+          '@ | Set-Content (Join-Path $project "jolter.json")
 
           Push-Location $project
           try {
@@ -153,13 +153,13 @@ EOF
           mkdir -p "$project"
 
           cat > "$project/jolter.json" << 'EOF'
-{
-  "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
-  "schemaVersion": 2,
-  "runtime": { "node": "lts" },
-  "tools": { "pnpm": "latest" }
-}
-EOF
+          {
+            "$schema": "https://schemas.jolter.dev/project/v2/schema.json",
+            "schemaVersion": 2,
+            "runtime": { "node": "lts" },
+            "tools": { "pnpm": "latest" }
+          }
+          EOF
 
           cd "$project"
 
