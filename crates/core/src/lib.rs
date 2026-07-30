@@ -23,7 +23,9 @@ use jolter_storage::{
 use semver::Version;
 use thiserror::Error;
 
-pub use jolter_installer::{ProgressAction, ProgressEvent, ProgressReporter};
+pub use jolter_installer::{
+    ProgressAction, ProgressEvent, ProgressReporter, ReleaseChannel, SelfUpgradeOutcome,
+};
 
 pub struct Jolter {
     storage: Storage,
@@ -661,6 +663,21 @@ impl Jolter {
         let target = self.storage.cache_dir().display().to_string();
         self.report(ProgressAction::Clean, &target);
         self.with_installer(|installer| Ok(installer.clean_cache()?))
+    }
+
+    pub fn upgrade(
+        &self,
+        channel: ReleaseChannel,
+        force: bool,
+    ) -> Result<SelfUpgradeOutcome, CoreError> {
+        let label = format!("jolter ({channel})");
+        self.report(ProgressAction::Resolve, &label);
+        let outcome =
+            self.with_installer(|installer| Ok(installer.upgrade_self(channel, force)?))?;
+        if outcome.updated {
+            let _ = self.install_shims(&outcome.executable_path);
+        }
+        Ok(outcome)
     }
 
     pub fn install_shims(&self, executable: &Path) -> Result<Vec<PathBuf>, CoreError> {

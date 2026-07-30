@@ -151,6 +151,36 @@ enum Command {
         #[arg(value_enum)]
         shell: CompletionShell,
     },
+    /// Upgrade Jolter executable to the latest release.
+    Upgrade {
+        /// Switch to the nightly channel and install the latest nightly build.
+        #[arg(long, conflicts_with = "latest")]
+        nightly: bool,
+        /// Switch to the latest channel and install latest build.
+        #[arg(long, conflicts_with = "nightly")]
+        latest: bool,
+        /// Release channel to use (stable or nightly).
+        #[arg(long, value_enum, default_value_t = ChannelArg::Stable, conflicts_with_all = ["nightly", "latest"])]
+        channel: ChannelArg,
+        /// Force re-installation even if already on the requested version.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ChannelArg {
+    Stable,
+    Nightly,
+}
+
+impl From<ChannelArg> for jolter_core::ReleaseChannel {
+    fn from(arg: ChannelArg) -> Self {
+        match arg {
+            ChannelArg::Stable => Self::Stable,
+            ChannelArg::Nightly => Self::Nightly,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
@@ -369,6 +399,21 @@ fn run_with_jolter_in_dir(
             ui.finish_progress();
             print_completions(shell);
             Ok(ExitCode::SUCCESS)
+        }
+        Command::Upgrade {
+            nightly,
+            latest,
+            channel,
+            force,
+        } => {
+            let selected_channel = if nightly {
+                jolter_core::ReleaseChannel::Nightly
+            } else if latest {
+                jolter_core::ReleaseChannel::Stable
+            } else {
+                channel.into()
+            };
+            run_upgrade(jolter, selected_channel, force, ui)
         }
     }
 }
@@ -754,6 +799,33 @@ fn run_cache(
                 human_bytes(outcome.reclaimed_bytes)
             ));
         }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_upgrade(
+    jolter: &Jolter,
+    channel: jolter_core::ReleaseChannel,
+    force: bool,
+    ui: &TerminalUi,
+) -> Result<ExitCode, CliError> {
+    let outcome = jolter.upgrade(channel, force)?;
+    if outcome.updated {
+        ui.success(format!(
+            "Upgraded Jolter from {} to {} ({}) at {}",
+            outcome.previous_version,
+            outcome.current_version,
+            outcome.channel,
+            outcome.executable_path.display()
+        ));
+        install_shims(jolter)?;
+    } else {
+        ui.info(format!(
+            "Jolter {} is already current ({}) at {}",
+            outcome.current_version,
+            outcome.channel,
+            outcome.executable_path.display()
+        ));
     }
     Ok(ExitCode::SUCCESS)
 }

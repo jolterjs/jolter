@@ -85,6 +85,23 @@ download_text() {
   fi
 }
 
+# Parse flags and environment variables
+CHANNEL="${JOLTER_CHANNEL:-stable}"
+if [ "${JOLTER_NIGHTLY:-0}" = "1" ] || [ "${JOLTER_NIGHTLY:-}" = "true" ]; then
+  CHANNEL="nightly"
+fi
+
+for arg in "$@"; do
+  case "$arg" in
+    --nightly|-n)
+      CHANNEL="nightly"
+      ;;
+    --channel=*)
+      CHANNEL="${arg#*=}"
+      ;;
+  esac
+done
+
 # Version resolution
 if [ -n "${JOLTER_VERSION:-}" ]; then
   VERSION="${JOLTER_VERSION}"
@@ -93,6 +110,14 @@ if [ -n "${JOLTER_VERSION:-}" ]; then
     *)  VERSION="v${VERSION}" ;;
   esac
   info "Installing specified Jolter version ${VERSION} for ${TARGET}..."
+elif [ "${CHANNEL}" = "nightly" ]; then
+  info "Fetching latest Jolter nightly release version..."
+  RELEASE_JSON="$(download_text "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly" 2>/dev/null || printf '')"
+  VERSION="$(printf '%s' "${RELEASE_JSON}" | grep '"tag_name":' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' | head -n 1)"
+  if [ -z "${VERSION}" ]; then
+    VERSION="nightly"
+  fi
+  info "Installing Jolter nightly release ${VERSION} for ${TARGET}..."
 else
   info "Fetching latest Jolter release version..."
   RELEASE_JSON="$(download_text "https://api.github.com/repos/jolterjs/jolter/releases/latest" 2>/dev/null || printf '')"

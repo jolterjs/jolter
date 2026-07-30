@@ -126,6 +126,24 @@ fn help_documents_terminal_output_controls() {
     assert!(stdout.contains("--quiet"));
     assert!(stdout.contains("--verbose"));
     assert!(stdout.contains("update"));
+    assert!(stdout.contains("upgrade"));
+}
+
+#[test]
+fn upgrade_command_help_documents_nightly_and_channel_flags() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+
+    let output = jolter_command(project.path(), home.path())
+        .args(["upgrade", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--nightly"));
+    assert!(stdout.contains("--channel"));
+    assert!(stdout.contains("--force"));
 }
 
 #[test]

@@ -1,7 +1,16 @@
+param(
+    [switch]$Nightly,
+    [string]$Channel = "stable"
+)
+
 # Jolter Installer for Windows
 # https://jolter.dev
 
 $ErrorActionPreference = 'Stop'
+
+if ($Nightly -or $env:JOLTER_NIGHTLY -eq "1" -or $env:JOLTER_NIGHTLY -eq "true" -or $env:JOLTER_CHANNEL -eq "nightly") {
+    $Channel = "nightly"
+}
 
 function Write-Info($Message) {
     Write-Host "[info] " -NoNewline -ForegroundColor Cyan
@@ -63,6 +72,16 @@ if ($env:JOLTER_VERSION) {
         $version = "v$version"
     }
     Write-Info "Installing specified Jolter version $version for $target..."
+} elseif ($Channel -eq "nightly") {
+    Write-Info "Fetching latest Jolter nightly release version..."
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly" -Headers @{ "User-Agent" = "jolter-installer" }
+        $version = $release.tag_name
+    } catch {
+        $version = "nightly"
+        Write-Warn "Could not query nightly release tag from GitHub API, falling back to $version."
+    }
+    Write-Info "Installing Jolter nightly release $version for $target..."
 } else {
     Write-Info "Fetching latest Jolter release version..."
     try {

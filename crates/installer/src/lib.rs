@@ -234,6 +234,32 @@ pub struct RemovalOutcome {
     pub reclaimed_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReleaseChannel {
+    #[default]
+    Stable,
+    Nightly,
+}
+
+impl fmt::Display for ReleaseChannel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stable => write!(formatter, "stable"),
+            Self::Nightly => write!(formatter, "nightly"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfUpgradeOutcome {
+    pub previous_version: Version,
+    pub current_version: Version,
+    pub channel: ReleaseChannel,
+    pub executable_path: PathBuf,
+    pub updated: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheCleanOutcome {
     pub removed_files: u64,
@@ -829,6 +855,172 @@ impl Installer {
             metadata.engines.node.as_deref(),
             node_version,
         )
+    }
+
+    pub fn resolve_self_release(
+        &self,
+        channel: ReleaseChannel,
+    ) -> Result<(Version, Artifact), InstallerError> {
+        let (os_name, arch_name) = match (self.platform.os, self.platform.arch) {
+            (OperatingSystem::Windows, Architecture::X64) => ("pc-windows-msvc", "x86_64"),
+            (OperatingSystem::Windows, Architecture::Arm64) => ("pc-windows-msvc", "aarch64"),
+            (OperatingSystem::Linux, Architecture::X64) => ("unknown-linux-gnu", "x86_64"),
+            (OperatingSystem::Linux, Architecture::Arm64) => ("unknown-linux-gnu", "aarch64"),
+            (OperatingSystem::MacOs, Architecture::X64) => ("apple-darwin", "x86_64"),
+            (OperatingSystem::MacOs, Architecture::Arm64) => ("apple-darwin", "aarch64"),
+        };
+        let target_triple = format!("{arch_name}-{os_name}");
+        let format = if self.platform.os == OperatingSystem::Windows {
+            ArchiveFormat::Zip
+        } else {
+            ArchiveFormat::TarGz
+        };
+        let archive_ext = format.cache_extension();
+
+        let (tag_name, release_info_url) = match channel {
+            ReleaseChannel::Stable => (
+                "latest".to_owned(),
+                "https://api.github.com/repos/jolterjs/jolter/releases/latest".to_owned(),
+            ),
+            ReleaseChannel::Nightly => (
+                "nightly".to_owned(),
+                "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly".to_owned(),
+            ),
+        };
+
+        let raw_text = self.http.get()?.get_text(&release_info_url)?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw_text).map_err(|source| InstallerError::MetadataJson {
+                url: release_info_url.clone(),
+                source,
+            })?;
+
+        let resolved_tag = parsed
+            .get("tag_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&tag_name)
+            .to_owned();
+
+        let clean_version_str = resolved_tag.trim_start_matches('v');
+        let version = Version::parse(clean_version_str).unwrap_or_else(|_| Version::new(0, 0, 0));
+
+        let archive_name = format!("jolter-{resolved_tag}-{target_triple}.{archive_ext}");
+        let download_url = format!(
+            "https://github.com/jolterjs/jolter/releases/download/{resolved_tag}/{archive_name}"
+        );
+        let checksum_url = format!("{download_url}.sha256");
+
+        let checksum_text = self.http.get()?.get_text(&checksum_url)?;
+        let sha256_val = parse_checksum_value(&checksum_text)?;
+
+        Ok((
+            version,
+            Artifact {
+                url: download_url,
+                integrity: ArtifactIntegrity::Sha256(sha256_val),
+                file_name: archive_name,
+                format,
+                strip_components: 1,
+            },
+        ))
+    }
+
+    pub fn upgrade_self(
+        &self,
+        channel: ReleaseChannel,
+        force: bool,
+    ) -> Result<SelfUpgradeOutcome, InstallerError> {
+        let current_ver =
+            Version::parse(env!("CARGO_PKG_VERSION")).unwrap_or_else(|_| Version::new(0, 0, 0));
+
+        let (version, artifact) = self.resolve_self_release(channel)?;
+
+        if !force && channel == ReleaseChannel::Stable && version <= current_ver {
+            let target_executable =
+                std::env::current_exe().unwrap_or_else(|_| self.storage.shims_dir().join("jolter"));
+            return Ok(SelfUpgradeOutcome {
+                previous_version: current_ver,
+                current_version: version,
+                channel,
+                executable_path: target_executable,
+                updated: false,
+            });
+        }
+
+        let target_label = format!("jolter@{version} ({channel})");
+        self.report_stage(ProgressAction::Resolve, &target_label);
+
+        artifact.validate()?;
+        let archive_path = self.obtain_archive(&artifact)?;
+
+        let temp_dir = tempfile::Builder::new()
+            .prefix(".jolter-upgrade-")
+            .tempdir_in(self.storage.root())
+            .map_err(InstallerError::Io)?;
+
+        self.report_stage(ProgressAction::Extract, &target_label);
+        extract_archive(
+            &archive_path,
+            temp_dir.path(),
+            artifact.format,
+            artifact.strip_components,
+        )?;
+
+        let exe_name = if cfg!(windows) {
+            "jolter.exe"
+        } else {
+            "jolter"
+        };
+        let new_binary = temp_dir.path().join(exe_name);
+        if !new_binary.is_file() {
+            return Err(InstallerError::ExecutableMissing { path: new_binary });
+        }
+        make_executable(&new_binary)?;
+
+        let target_dir = self.storage.root().join("bin");
+        fs::create_dir_all(&target_dir).map_err(InstallerError::Io)?;
+        let target_executable = target_dir.join(exe_name);
+
+        self.report_stage(ProgressAction::Publish, &target_label);
+
+        #[cfg(windows)]
+        {
+            if target_executable.exists() {
+                let old_executable =
+                    target_dir.join(format!("{exe_name}.old.{}", std::process::id()));
+                let _ = fs::rename(&target_executable, &old_executable);
+            }
+            fs::copy(&new_binary, &target_executable).map_err(|source| {
+                InstallerError::Publish {
+                    path: target_executable.clone(),
+                    source,
+                }
+            })?;
+        }
+
+        #[cfg(not(windows))]
+        {
+            let temp_dest = target_dir.join(format!(".{exe_name}.tmp.{}", std::process::id()));
+            fs::copy(&new_binary, &temp_dest).map_err(|source| InstallerError::Publish {
+                path: temp_dest.clone(),
+                source,
+            })?;
+            make_executable(&temp_dest)?;
+            fs::rename(&temp_dest, &target_executable).map_err(|source| {
+                InstallerError::Publish {
+                    path: target_executable.clone(),
+                    source,
+                }
+            })?;
+        }
+
+        Ok(SelfUpgradeOutcome {
+            previous_version: current_ver,
+            current_version: version,
+            channel,
+            executable_path: target_executable,
+            updated: true,
+        })
     }
 
     pub fn uninstall_runtime(
