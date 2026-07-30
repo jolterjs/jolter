@@ -1352,6 +1352,37 @@ mod tests {
     }
 
     #[test]
+    fn tests_plugin_error_display_extended() {
+        let err = PluginError::UnsupportedSchema(99);
+        assert!(err.to_string().contains("99"));
+
+        let err = PluginError::InvalidEntrypoint;
+        assert!(err.to_string().contains("entrypoint"));
+
+        let err = PluginError::InvalidSha256("bad_hash".to_owned());
+        assert!(err.to_string().contains("bad_hash"));
+
+        let err = PluginError::InsecureUrl("http://insecure.test".to_owned());
+        assert!(err.to_string().contains("http://insecure.test"));
+
+        let err = PluginError::ManifestTooLarge {
+            url: "http://test".to_owned(),
+        };
+        assert!(err.to_string().contains("too large"));
+
+        let err = PluginError::WasmTooLarge {
+            url: "http://test".to_owned(),
+        };
+        assert!(err.to_string().contains("too large"));
+
+        let err = PluginError::WasmSizeMismatch {
+            expected: 10,
+            actual: 20,
+        };
+        assert!(err.to_string().contains("10 bytes, got 20"));
+    }
+
+    #[test]
     fn tests_plugin_name_validation() {
         assert!(validate_plugin_name("@scope/valid-name").is_ok());
         assert!(validate_plugin_name("valid-name").is_ok());

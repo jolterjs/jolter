@@ -1024,4 +1024,18 @@ mod tests {
             "no active node runtime; run `jolter use node@<version>`"
         );
     }
+
+    #[test]
+    fn tests_shim_error_display_extended() {
+        let err = ShimError::PluginToolNotInstalled("custom-tool".to_owned());
+        assert!(err.to_string().contains("custom-tool"));
+
+        let req: RuntimeRequest = "node@20".parse().unwrap();
+        let err = ShimError::RuntimeNotInstalled(req);
+        assert!(err.to_string().contains("node@20"));
+
+        let tool_req: ToolRequest = "pnpm@10".parse().unwrap();
+        let err = ShimError::ToolNotInstalled(tool_req);
+        assert!(err.to_string().contains("pnpm@10"));
+    }
 }

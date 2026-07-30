@@ -1760,6 +1760,33 @@ mod tests {
 
         let uninst_ok = jolter.uninstall_runtime(RuntimeKind::Node, &v2, true);
         assert!(uninst_ok.is_ok());
+
+        let tool_ver = Version::new(10, 0, 0);
+        let tool_exe = storage
+            .tool_entrypoint(ToolKind::Pnpm, &tool_ver, "pnpm")
+            .unwrap();
+        fs::create_dir_all(tool_exe.parent().unwrap()).unwrap();
+        fs::write(&tool_exe, b"pnpm").unwrap();
+        storage.activate_tool(ToolKind::Pnpm, &tool_ver).unwrap();
+
+        assert!(
+            jolter
+                .uninstall_tool(ToolKind::Pnpm, &tool_ver, false)
+                .is_err()
+        );
+        assert!(
+            jolter
+                .uninstall_tool(ToolKind::Pnpm, &tool_ver, true)
+                .is_ok()
+        );
+
+        assert!(jolter.storage().deactivate(RuntimeKind::Node, None).is_ok());
+        assert!(
+            jolter
+                .storage()
+                .deactivate_tool(ToolKind::Pnpm, None)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1772,5 +1799,103 @@ mod tests {
             err.to_string(),
             "no active plugin tool `my-tool`; pass an explicit selector such as my-tool@latest"
         );
+
+        let err = CoreError::NoRuntimeRequirement(PathBuf::from("/project"));
+        assert!(err.to_string().contains("/project"));
+
+        let err = CoreError::ToolRequiresActiveNode("pnpm@10".parse().unwrap());
+        assert!(
+            err.to_string()
+                .contains("requires an active Node.js runtime")
+        );
+
+        let err = CoreError::ActiveNodeRuntimeMissing {
+            version: Version::new(24, 0, 0),
+            path: PathBuf::from("/node"),
+        };
+        assert!(
+            err.to_string()
+                .contains("active node@24.0.0 runtime is missing")
+        );
+
+        let err = CoreError::ActiveRuntimeRemoval {
+            kind: RuntimeKind::Node,
+            version: Version::new(24, 0, 0),
+        };
+        assert!(
+            err.to_string()
+                .contains("refusing to uninstall active node@24.0.0")
+        );
+
+        let err = CoreError::ActiveToolRemoval {
+            kind: ToolKind::Pnpm,
+            version: Version::new(10, 0, 0),
+        };
+        assert!(
+            err.to_string()
+                .contains("refusing to uninstall active pnpm@10.0.0")
+        );
+
+        let err = CoreError::ActivePluginToolRemoval {
+            provider: "prov".to_owned(),
+            tool: "t".to_owned(),
+            version: Version::new(1, 0, 0),
+        };
+        assert!(
+            err.to_string()
+                .contains("refusing to uninstall active plugin tool t@1.0.0 via prov")
+        );
+
+        let err = CoreError::MissingProjectPlugin {
+            name: "plug".to_owned(),
+            selector: "1.0".to_owned(),
+        };
+        assert!(err.to_string().contains("project requires plugin plug@1.0"));
+
+        let err = CoreError::PluginToolProviderMissing("t".to_owned());
+        assert!(
+            err.to_string()
+                .contains("no installed plugin provides tool `t`")
+        );
+
+        let err = CoreError::AmbiguousPluginToolProvider {
+            tool: "t".to_owned(),
+            providers: "p1, p2".to_owned(),
+        };
+        assert!(
+            err.to_string()
+                .contains("multiple installed plugins provide tool `t`")
+        );
+
+        let err = CoreError::UnsupportedPluginToolArchive("rar".to_owned());
+        assert!(
+            err.to_string()
+                .contains("plugin tool archive format `rar` is not supported")
+        );
+
+        let err = CoreError::DirectPluginToolUseUnsupported("t".to_owned());
+        assert!(
+            err.to_string()
+                .contains("direct use of plugin-provided tool `t` is not available yet")
+        );
+
+        let err = CoreError::ActivePluginRemoval("plug".to_owned());
+        assert!(
+            err.to_string()
+                .contains("plugin `plug` is installed with active shim commands")
+        );
+    }
+
+    #[test]
+    fn tests_core_error_display_extended() {
+        let err = CoreError::PluginNotInstalled("my-plugin".to_owned());
+        assert!(err.to_string().contains("my-plugin"));
+
+        let err = CoreError::NoActivePluginTool("my-tool".to_owned());
+        assert!(err.to_string().contains("my-tool"));
+
+        let req: ToolRequest = "pnpm@10".parse().unwrap();
+        let err = CoreError::ToolRequiresNode(req);
+        assert!(err.to_string().contains("requires a Node.js runtime"));
     }
 }

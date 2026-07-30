@@ -1937,4 +1937,30 @@ mod tests {
         assert!(parse_and_run(&["completions", "zsh"]).is_ok());
         assert!(parse_and_run(&["uninstall", "node@24.1.0", "--force"]).is_ok());
     }
+
+    #[test]
+    fn tests_channel_arg_conversion() {
+        let stable: jolter_core::ReleaseChannel = ChannelArg::Stable.into();
+        assert_eq!(stable, jolter_core::ReleaseChannel::Stable);
+        let nightly: jolter_core::ReleaseChannel = ChannelArg::Nightly.into();
+        assert_eq!(nightly, jolter_core::ReleaseChannel::Nightly);
+    }
+
+    #[test]
+    fn tests_cli_target_parsers_and_error_paths() {
+        assert!(parse_use_target("node@24").is_ok());
+        assert!(parse_use_target("pnpm@10").is_ok());
+        assert!(parse_use_target("my-tool@1.0").is_ok());
+        assert!(parse_use_target("invalid target syntax!").is_err());
+
+        assert!(parse_update_target("node@24").is_ok());
+        assert!(parse_update_target("pnpm@10").is_ok());
+        assert!(parse_update_target("my-tool@1.0").is_ok());
+        assert!(parse_update_target("invalid update target!").is_err());
+
+        assert!(parse_uninstall_target("node@24.1.0").is_ok());
+        assert!(parse_uninstall_target("pnpm@10.2.0").is_ok());
+        assert!(parse_uninstall_target("my-tool@1.0.0").is_ok());
+        assert!(parse_uninstall_target("invalid uninstall target!").is_err());
+    }
 }

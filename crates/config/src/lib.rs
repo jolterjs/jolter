@@ -509,4 +509,45 @@ mod tests {
             Err(ConfigError::Runtime(_))
         ));
     }
+
+    #[test]
+    fn tests_config_error_display() {
+        let err = ConfigError::UnsupportedSchemaVersion {
+            found: 99,
+            supported: 2,
+        };
+        assert!(err.to_string().contains("99"));
+
+        let err = ConfigError::EmptySelector("node".to_owned());
+        assert!(err.to_string().contains("node"));
+
+        let err = ConfigError::InvalidPluginName("bad".to_owned());
+        assert!(err.to_string().contains("bad"));
+
+        let err = ConfigError::InvalidPluginToolName("bad".to_owned());
+        assert!(err.to_string().contains("bad"));
+
+        let err = ConfigError::InvalidPluginSelector {
+            name: "p".to_owned(),
+            selector: "bad".to_owned(),
+        };
+        assert!(
+            err.to_string()
+                .contains("invalid plugin selector `bad` for `p`")
+        );
+
+        let err = ConfigError::InvalidPluginToolSelector {
+            name: "p".to_owned(),
+            selector: "bad".to_owned(),
+        };
+        assert!(
+            err.to_string()
+                .contains("invalid plugin tool selector `bad` for `p`")
+        );
+
+        let err = ConfigError::InvalidPath {
+            path: PathBuf::from("/invalid"),
+        };
+        assert!(err.to_string().contains("/invalid"));
+    }
 }

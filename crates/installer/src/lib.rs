@@ -3633,4 +3633,77 @@ mod tests {
         let delay_clamped = retry_delay(0, Some(&header_large));
         assert_eq!(delay_clamped, MAX_RETRY_AFTER);
     }
+
+    #[test]
+    fn tests_release_channel_and_self_upgrade() {
+        assert_eq!(ReleaseChannel::default(), ReleaseChannel::Stable);
+        assert_eq!(ReleaseChannel::Stable.to_string(), "stable");
+        assert_eq!(ReleaseChannel::Nightly.to_string(), "nightly");
+
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp.path());
+        storage.ensure_layout().unwrap();
+
+        let mut text = HashMap::new();
+        text.insert(
+            "https://api.github.com/repos/jolterjs/jolter/releases/latest".to_owned(),
+            r#"{"tag_name":"v0.3.0"}"#.to_owned(),
+        );
+        text.insert(
+            "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly".to_owned(),
+            r#"{"tag_name":"v2026-07-30"}"#.to_owned(),
+        );
+
+        let archive_bytes = b"fake binary payload".to_vec();
+        let sha256_hex = format!("{:x}", Sha256::digest(&archive_bytes));
+
+        let platform = Platform::current().unwrap();
+        let (os_name, arch_name) = match (platform.os, platform.arch) {
+            (OperatingSystem::Windows, Architecture::X64) => ("pc-windows-msvc", "x86_64"),
+            (OperatingSystem::Windows, Architecture::Arm64) => ("pc-windows-msvc", "aarch64"),
+            (OperatingSystem::Linux, Architecture::X64) => ("unknown-linux-gnu", "x86_64"),
+            (OperatingSystem::Linux, Architecture::Arm64) => ("unknown-linux-gnu", "aarch64"),
+            (OperatingSystem::MacOs, Architecture::X64) => ("apple-darwin", "x86_64"),
+            (OperatingSystem::MacOs, Architecture::Arm64) => ("apple-darwin", "aarch64"),
+        };
+        let target_triple = format!("{arch_name}-{os_name}");
+        let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
+
+        let stable_archive_name = format!("jolter-v0.3.0-{target_triple}.{ext}");
+        let stable_download_url = format!(
+            "https://github.com/jolterjs/jolter/releases/download/v0.3.0/{stable_archive_name}"
+        );
+        let stable_checksum_url = format!("{stable_download_url}.sha256");
+
+        text.insert(stable_checksum_url, sha256_hex.clone());
+
+        let nightly_archive_name = format!("jolter-v2026-07-30-{target_triple}.{ext}");
+        let nightly_download_url = format!(
+            "https://github.com/jolterjs/jolter/releases/download/v2026-07-30/{nightly_archive_name}"
+        );
+        let nightly_checksum_url = format!("{nightly_download_url}.sha256");
+
+        text.insert(nightly_checksum_url, sha256_hex);
+
+        let client = Arc::new(FakeHttpClient {
+            text,
+            downloads: HashMap::new(),
+            text_count: Mutex::new(0),
+            download_count: Mutex::new(0),
+        });
+
+        let reporter = Arc::new(RecordingReporter::default());
+        let installer = Installer::with_client_and_reporter(storage, platform, client, reporter);
+
+        let (ver_stable, artifact_stable) = installer
+            .resolve_self_release(ReleaseChannel::Stable)
+            .unwrap();
+        assert_eq!(ver_stable, Version::new(0, 3, 0));
+        assert_eq!(artifact_stable.url, stable_download_url);
+
+        let (_ver_nightly, artifact_nightly) = installer
+            .resolve_self_release(ReleaseChannel::Nightly)
+            .unwrap();
+        assert_eq!(artifact_nightly.url, nightly_download_url);
+    }
 }

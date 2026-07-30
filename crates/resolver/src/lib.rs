@@ -687,4 +687,19 @@ mod tests {
         );
         assert_eq!(resolution.tools[0].request.to_string(), "pnpm@10.0.0");
     }
+
+    #[test]
+    fn tests_resolver_error_display() {
+        let err = ResolverError::Read {
+            path: PathBuf::from("/read"),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        };
+        assert!(err.to_string().contains("failed to read /read"));
+
+        let err = ResolverError::PackageJson {
+            path: PathBuf::from("/pj"),
+            source: serde_json::from_str::<serde_json::Value>("bad json").unwrap_err(),
+        };
+        assert!(err.to_string().contains("invalid package.json at"));
+    }
 }

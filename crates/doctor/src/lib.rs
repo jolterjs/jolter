@@ -1564,4 +1564,13 @@ mod tests {
         );
         assert!(report.checks.iter().any(|c| c.status == CheckStatus::Fail));
     }
+
+    #[test]
+    fn tests_doctor_error_display() {
+        let err = DoctorError::ReadDirectory {
+            path: PathBuf::from("/invalid/path"),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        };
+        assert!(err.to_string().contains("/invalid/path"));
+    }
 }

@@ -1486,5 +1486,28 @@ mod tests {
             err.to_string()
                 .contains("failed to create storage directory")
         );
+
+        let err = StorageError::Read {
+            path: PathBuf::from("/read"),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        };
+        assert!(err.to_string().contains("failed to read storage directory"));
+
+        let err = StorageError::ReadFile {
+            path: PathBuf::from("/readfile"),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        };
+        assert!(err.to_string().contains("failed to read storage file"));
+
+        let err = StorageError::WriteFile {
+            path: PathBuf::from("/writefile"),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        };
+        assert!(err.to_string().contains("failed to write storage file"));
+
+        let err = StorageError::InvalidPath {
+            path: PathBuf::from("/invalid"),
+        };
+        assert!(err.to_string().contains("invalid storage path"));
     }
 }
