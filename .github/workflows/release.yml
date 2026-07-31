@@ -23,31 +23,37 @@ jobs:
             target: x86_64-unknown-linux-gnu
             archive: tar
             self-hosted: true
+            toolchain-install: false
 
           - runs-on: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar
             self-hosted: false
+            toolchain-install: true
 
           - runs-on: windows-2025
             target: x86_64-pc-windows-msvc
             archive: zip
             self-hosted: false
+            toolchain-install: true
 
           - runs-on: windows-11-arm
             target: aarch64-pc-windows-msvc
             archive: zip
             self-hosted: false
+            toolchain-install: true
 
           - runs-on: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar
             self-hosted: false
+            toolchain-install: true
 
           - runs-on: macos-15
             target: aarch64-apple-darwin
             archive: tar
             self-hosted: false
+            toolchain-install: true
 
     runs-on: ${{ matrix.runs-on }}
 
@@ -68,6 +74,7 @@ jobs:
           echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
 
       - name: Install Rust
+        if: matrix.toolchain-install
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

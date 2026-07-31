@@ -36,11 +36,6 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt
-
       - name: Start sccache
         run: |
           sccache --start-server || true
@@ -78,11 +73,6 @@ jobs:
           echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
           echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
       - name: Start sccache
         run: |
           sccache --start-server || true
@@ -113,11 +103,6 @@ jobs:
           echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
           echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
           echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
 
       - name: Start sccache
         run: |
@@ -152,11 +137,6 @@ jobs:
           echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
           echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
           echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
 
       - name: Start sccache
         run: |

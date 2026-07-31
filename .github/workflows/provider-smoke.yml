@@ -32,9 +32,6 @@ jobs:
           echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
           echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Start sccache
         run: |
           sccache --start-server || true
