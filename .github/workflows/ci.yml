@@ -30,6 +30,7 @@ jobs:
           echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
           echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
           echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
+          echo "/opt/github-runners/cache/cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -72,6 +73,7 @@ jobs:
           echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
           echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
           echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
+          echo "/opt/github-runners/cache/cargo/bin" >> "$GITHUB_PATH"
 
       - name: Start sccache
         run: |
@@ -103,6 +105,7 @@ jobs:
           echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
           echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
           echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
+          echo "/opt/github-runners/cache/cargo/bin" >> "$GITHUB_PATH"
 
       - name: Start sccache
         run: |
@@ -137,6 +140,7 @@ jobs:
           echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
           echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
           echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
+          echo "/opt/github-runners/cache/cargo/bin" >> "$GITHUB_PATH"
 
       - name: Start sccache
         run: |
