@@ -14,10 +14,22 @@ env:
 jobs:
   quality:
     name: Quality (fmt + clippy)
-    runs-on: [self-hosted, linux, quality]
+    runs-on: [self-hosted, linux, x64, quality]
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure shared cache
+        run: |
+          echo "CARGO_HOME=/opt/github-runners/cache/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=/opt/github-runners/cache/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=/opt/github-runners/cache/target" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=/opt/github-runners/cache/sccache" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "BUN_INSTALL_CACHE_DIR=/opt/github-runners/cache/bun" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
+          echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
+          echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -27,10 +39,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: clippy,rustfmt
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+      - name: Start sccache
+        run: |
+          sccache --start-server || true
+          sccache --zero-stats
 
       - name: Install npm dependencies
         run: make install
@@ -41,35 +55,74 @@ jobs:
       - name: Clippy
         run: make clippy
 
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
+
   test:
-    name: Test (Linux CI Runner)
-    runs-on: [self-hosted, linux, ci]
+    name: Test
+    runs-on: [self-hosted, linux, x64, ci]
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure shared cache
+        run: |
+          echo "CARGO_HOME=/opt/github-runners/cache/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=/opt/github-runners/cache/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=/opt/github-runners/cache/target" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=/opt/github-runners/cache/sccache" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "BUN_INSTALL_CACHE_DIR=/opt/github-runners/cache/bun" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
+          echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
+          echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+      - name: Start sccache
+        run: |
+          sccache --start-server || true
+          sccache --zero-stats
 
       - name: Run tests
         run: make test
 
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
+
   audit:
     name: Security Audit
-    runs-on: [self-hosted, linux, audit]
+    runs-on: [self-hosted, linux, x64, audit]
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure shared cache
+        run: |
+          echo "CARGO_HOME=/opt/github-runners/cache/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=/opt/github-runners/cache/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=/opt/github-runners/cache/target" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=/opt/github-runners/cache/sccache" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "BUN_INSTALL_CACHE_DIR=/opt/github-runners/cache/bun" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
+          echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
+          echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
+
+      - name: Start sccache
+        run: |
+          sccache --start-server || true
+          sccache --zero-stats
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
@@ -77,29 +130,68 @@ jobs:
       - name: Run audit
         run: make audit
 
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
+
   coverage:
     name: Coverage
-    runs-on: [self-hosted, linux, coverage]
+    runs-on: [self-hosted, linux, x64, coverage]
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure shared cache
+        run: |
+          echo "CARGO_HOME=/opt/github-runners/cache/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=/opt/github-runners/cache/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=/opt/github-runners/cache/target" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=/opt/github-runners/cache/sccache" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "BUN_INSTALL_CACHE_DIR=/opt/github-runners/cache/bun" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_CACHE=/opt/github-runners/cache/npm" >> "$GITHUB_ENV"
+          echo "PNPM_STORE_DIR=/opt/github-runners/cache/pnpm" >> "$GITHUB_ENV"
+          echo "DENO_DIR=/opt/github-runners/cache/deno" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+      - name: Start sccache
+        run: |
+          sccache --start-server || true
+          sccache --zero-stats
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Run coverage
+      - name: Generate coverage
         run: make coverage
 
-      - name: Upload coverage
+      - name: Publish coverage summary
+        if: always()
+        run: |
+          if [ -f coverage.md ]; then
+            {
+              echo "## Coverage"
+              echo
+              cat coverage.md
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: codecov.json
+          path: |
+            coverage.md
+            lcov.info
+            cobertura.xml
+            html/
+          if-no-files-found: warn
+
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
