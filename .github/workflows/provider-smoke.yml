@@ -16,6 +16,7 @@ jobs:
   install-linux:
     name: Providers (Linux)
     runs-on: ubuntu-latest
+    environment: provider-smoke
 
     steps:
       - uses: actions/checkout@v6
@@ -67,6 +68,7 @@ jobs:
   install-windows:
     name: Providers (Windows)
     runs-on: windows-2025
+    environment: provider-smoke
 
     steps:
       - uses: actions/checkout@v6
@@ -126,6 +128,7 @@ jobs:
         os: [macos-15-intel, macos-15]
 
     runs-on: ${{ matrix.os }}
+    environment: provider-smoke
 
     steps:
       - uses: actions/checkout@v6

@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,6 +15,7 @@ env:
 jobs:
   build:
     name: Build (${{ matrix.target }})
+    environment: release
     strategy:
       fail-fast: false
       matrix:
@@ -47,6 +48,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.JOLTERBOT_TOKEN }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -136,4 +139,75 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: jolter-${{ matrix.target }}
-          path: dist/*
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.zip
+            dist/*.zip.sha256
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.JOLTERBOT_TOKEN }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: jolter-*
+          merge-multiple: true
+
+      - name: Extract release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VER="${GITHUB_REF_NAME#v}"
+          export VER
+
+          node -e '
+            const fs = require("fs");
+            const changelog = fs.readFileSync("CHANGELOG.md", "utf8");
+            const version = process.env.VER;
+            const lines = changelog.split("\n");
+            let active = false;
+            const notes = [];
+            for (const line of lines) {
+              if (/^##\s+/.test(line)) {
+                if (line.includes(" " + version + " ") || line.startsWith("## " + version + " ") || line.startsWith("## " + version + "-")) {
+                  active = true;
+                } else if (active) {
+                  break;
+                }
+              }
+              if (active) {
+                notes.push(line);
+              }
+            }
+            const content = notes.join("\n").trim();
+            if (!content) {
+              console.error("No changelog entry found for version " + version);
+              process.exit(1);
+            }
+            fs.writeFileSync("RELEASE_NOTES.md", content + "\n");
+          '
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.JOLTERBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/* \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file RELEASE_NOTES.md
