@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jolter-runtime",
  "serde",
@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jolter-config",
  "jolter-doctor",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-doctor"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "jolter-resolver",
@@ -1209,7 +1209,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-installer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "flate2",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jolter-storage",
  "reqwest",
@@ -1246,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-resolver"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jolter-config",
  "jolter-runtime",
@@ -1258,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "semver",
  "thiserror",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-shim"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jolter-resolver",
  "jolter-runtime",
@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "jolter-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jolter-runtime",
  "semver",
