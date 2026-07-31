@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-08-01
 
 - add schema-version-2 plugin declarations in `jolter.json`
 - add global plugin install, list, update, and uninstall commands

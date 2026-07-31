@@ -8,7 +8,7 @@ for project status, sequencing, and release readiness.
 
 ## Project Position
 
-Current version: `0.2.0` (`0.3.0` release-candidate preparation)
+Current version: `0.3.0` (`0.4.0` release-candidate preparation)
 
 Current maturity: **beta / release-candidate preparation**
 

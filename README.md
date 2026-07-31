@@ -200,7 +200,7 @@ Start at the [documentation home](docs/README.md).
 
 ## Project Status
 
-Jolter `0.2.0` provides the stable core command surface and remains pre-1.0
+Jolter `0.3.0` provides the stable core command surface and remains pre-1.0
 while its cross-platform release and real-provider workflows complete a
 release-candidate period. Compatibility commitments and known release work are
 documented in the [compatibility policy](docs/compatibility.md) and
