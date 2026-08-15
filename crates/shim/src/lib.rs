@@ -423,7 +423,10 @@ mod tests {
             resolve_command("pnpm", &proj_dir, &storage),
             Err(ShimError::ToolNotInstalled(_))
         ));
+    }
 
+    #[test]
+    fn tests_shim_resolver_fallback_paths() {
         let temp_fallback = tempfile::tempdir().unwrap();
         let storage_fb = Storage::new(temp_fallback.path());
         storage_fb.ensure_layout().unwrap();

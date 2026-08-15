@@ -1043,6 +1043,7 @@ fn tests_installer_constructors_and_lazy_client() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn tests_installer_resolve_runtimes_and_http_helpers() {
     let temp = tempfile::tempdir().unwrap();
     let storage = Storage::new(temp.path());
@@ -1094,7 +1095,7 @@ fn tests_installer_resolve_runtimes_and_http_helpers() {
     );
     let valid_sha512_sri = format!(
         "sha512-{}",
-        base64::engine::general_purpose::STANDARD.encode(&[0_u8; 64])
+        base64::engine::general_purpose::STANDARD.encode([0_u8; 64])
     );
     text.insert(
         "https://registry.npmjs.org/pnpm".to_owned(),
@@ -1552,10 +1553,7 @@ fn tests_installer_resolve_runtimes_and_http_helpers() {
 
     let zip_dest = temp.path().join("zip_out");
     archive::extract_archive(&zip_path, &zip_dest, ArchiveFormat::Zip, 1).unwrap();
-    assert_eq!(
-        fs::read(&zip_dest.join("test.txt")).unwrap(),
-        b"zip_content"
-    );
+    assert_eq!(fs::read(zip_dest.join("test.txt")).unwrap(), b"zip_content");
 
     let empty_gh_release = providers::github::GithubRelease {
         tag_name: "v1.0.0".to_string(),

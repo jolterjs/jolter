@@ -376,6 +376,11 @@ fn tests_probe_output_and_unparseable_version() {
     );
     assert!(!matches!(check.status, crate::types::CheckStatus::Pass));
     assert!(check.message.contains("could not parse a semantic version"));
+}
+
+#[test]
+fn tests_tool_and_runtime_manifest_checks() {
+    use semver::Version;
 
     let temp = tempfile::tempdir().unwrap();
     let tool = InstalledTool {
@@ -565,8 +570,8 @@ fn tests_environment_checks_paths() {
 
     let no_output = probe::ProbeOutput {
         status,
-        stdout: "".to_string(),
-        stderr: "".to_string(),
+        stdout: String::new(),
+        stderr: String::new(),
         timed_out: false,
     };
     assert_eq!(no_output.combined_output(), "<no output>");
@@ -613,8 +618,8 @@ fn tests_environment_checks_extended() {
     let check_pf = checks::environment::platform_check();
     assert_eq!(check_pf.status, types::CheckStatus::Pass);
 
-    let check_pc = checks::environment::path_conflict_check(&storage);
-    assert_eq!(check_pc.status, types::CheckStatus::Warning);
+    let check_path_conflict = checks::environment::path_conflict_check(&storage);
+    assert_eq!(check_path_conflict.status, types::CheckStatus::Warning);
 
     let invalid_cache_file = storage.cache_dir().join("downloads").join("invalid.zip");
     fs::create_dir_all(invalid_cache_file.parent().unwrap()).unwrap();
@@ -633,8 +638,8 @@ fn tests_environment_checks_extended() {
 
     let probe_none = probe::ProbeOutput {
         status: std::process::Command::new("true").status().unwrap(),
-        stdout: "".to_owned(),
-        stderr: "".to_owned(),
+        stdout: String::new(),
+        stderr: String::new(),
         timed_out: false,
     };
     assert_eq!(probe_none.combined_output(), "<no output>");

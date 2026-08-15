@@ -480,6 +480,7 @@ fn tests_setup_ci_and_github_actions_env() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn tests_upgrade_cmd_and_additional_errors() {
     let temp_dir = tempfile::tempdir().unwrap();
     let storage = jolter_storage::Storage::new(temp_dir.path());

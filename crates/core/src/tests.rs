@@ -817,15 +817,15 @@ fn tests_core_prune_cache_and_sync_methods_extra() {
     let cleaned = jolter.clean_cache().unwrap();
     assert_eq!(cleaned.reclaimed_bytes, 0);
 
-    let prune_pt = PruneItemKind::PluginTool {
+    let item_plugin_tool = PruneItemKind::PluginTool {
         provider: "@scope/eslint".to_owned(),
         tool: "eslint-cli".to_owned(),
     };
-    assert_eq!(prune_pt.to_string(), "eslint-cli via @scope/eslint");
+    assert_eq!(item_plugin_tool.to_string(), "eslint-cli via @scope/eslint");
 
-    let prune_rt = PruneItemKind::Runtime(RuntimeKind::Node);
-    assert_eq!(prune_rt.to_string(), "node");
+    let item_runtime = PruneItemKind::Runtime(RuntimeKind::Node);
+    assert_eq!(item_runtime.to_string(), "node");
 
-    let prune_tl = PruneItemKind::Tool(ToolKind::Pnpm);
-    assert_eq!(prune_tl.to_string(), "pnpm");
+    let item_tool = PruneItemKind::Tool(ToolKind::Pnpm);
+    assert_eq!(item_tool.to_string(), "pnpm");
 }

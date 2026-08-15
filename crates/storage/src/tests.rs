@@ -459,7 +459,7 @@ fn tests_installed_plugins_and_plugin_tools() {
 }
 
 #[test]
-fn tests_clean_directory_stats_file_and_manifest_errors() {
+fn tests_clean_directory_stats_and_manifest_reading() {
     let temp = tempfile::tempdir().unwrap();
     let file = temp.path().join("single_file.txt");
     fs::write(&file, b"sample_bytes").unwrap();
@@ -574,7 +574,11 @@ fn tests_clean_directory_stats_file_and_manifest_errors() {
         ));
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o755)).unwrap();
     }
+}
 
+#[test]
+fn tests_storage_active_parse_errors() {
+    let temp = tempfile::tempdir().unwrap();
     let pt_root = temp.path().join("plugins_root");
     fs::create_dir_all(&pt_root).unwrap();
     fs::write(pt_root.join("not_a_dir.txt"), b"file").unwrap();
