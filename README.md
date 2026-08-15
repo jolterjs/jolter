@@ -1,3 +1,5 @@
+<div align="center">
+
 # Jolter
 
 **One fast, reliable home for your JavaScript runtimes and tools.**
@@ -5,6 +7,8 @@
 Jolter keeps Node.js, Bun, Deno, npm, pnpm, and Yarn consistent across your
 machine, your team, and CI. Pin what a project needs once, enter the directory,
 and use the right toolchain without manually switching versions.
+
+</div>
 
 ## Install
 

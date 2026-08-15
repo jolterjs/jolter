@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+      - "v*.*.*-*"
 
 permissions:
   contents: write
@@ -185,6 +186,7 @@ jobs:
               if (/^##\s+/.test(line)) {
                 if (line.includes(" " + version + " ") || line.startsWith("## " + version + " ") || line.startsWith("## " + version + "-")) {
                   active = true;
+                  continue;
                 } else if (active) {
                   break;
                 }
@@ -195,10 +197,15 @@ jobs:
             }
             const content = notes.join("\n").trim();
             if (!content) {
-              console.error("No changelog entry found for version " + version);
-              process.exit(1);
+              if (version.includes("nightly")) {
+                fs.writeFileSync("RELEASE_NOTES.md", "Nightly release " + process.env.GITHUB_REF_NAME + "\n");
+              } else {
+                console.error("No changelog entry found for version " + version);
+                process.exit(1);
+              }
+            } else {
+              fs.writeFileSync("RELEASE_NOTES.md", content + "\n");
             }
-            fs.writeFileSync("RELEASE_NOTES.md", content + "\n");
           '
 
       - name: Create GitHub Release
@@ -207,7 +214,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          FLAGS=()
+          if [[ "${GITHUB_REF_NAME}" == *"-nightly."* ]] || [[ "${GITHUB_REF_NAME}" == *"nightly"* ]]; then
+            FLAGS+=("--prerelease")
+          fi
+
           gh release create "${GITHUB_REF_NAME}" \
             dist/* \
             --title "${GITHUB_REF_NAME}" \
-            --notes-file RELEASE_NOTES.md
+            --notes-file RELEASE_NOTES.md \
+            "${FLAGS[@]}"

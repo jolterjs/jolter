@@ -75,12 +75,23 @@ if ($env:JOLTER_VERSION) {
 } elseif ($Channel -eq "nightly") {
     Write-Info "Fetching latest Jolter nightly release version..."
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly" -Headers @{ "User-Agent" = "jolter-installer" }
-        $version = $release.tag_name
+        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/jolterjs/jolter/releases" -Headers @{ "User-Agent" = "jolter-installer" }
+        if ($releases -is [array]) {
+            $nightlyRelease = $releases | Where-Object { -not $_.draft -and $_.tag_name -like "*nightly*" } | Select-Object -First 1
+            $version = $nightlyRelease.tag_name
+        } else {
+            $version = $releases.tag_name
+        }
     } catch {
-        $version = "nightly"
-        Write-Warn "Could not query nightly release tag from GitHub API, falling back to $version."
+        try {
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly" -Headers @{ "User-Agent" = "jolter-installer" }
+            $version = $release.tag_name
+        } catch {
+            $version = "nightly"
+            Write-Warn "Could not query nightly release tag from GitHub API, falling back to $version."
+        }
     }
+    if (-not $version) { $version = "nightly" }
     Write-Info "Installing Jolter nightly release $version for $target..."
 } else {
     Write-Info "Fetching latest Jolter release version..."

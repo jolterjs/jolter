@@ -99,23 +99,23 @@ Verify before extraction.
 Linux:
 
 ```bash
-sha256sum -c jolter-v0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c jolter-v0.4.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 macOS:
 
 ```bash
-shasum -a 256 -c jolter-v0.2.0-aarch64-apple-darwin.tar.gz.sha256
+shasum -a 256 -c jolter-v0.4.0-aarch64-apple-darwin.tar.gz.sha256
 ```
 
 Windows PowerShell:
 
 ```powershell
 $actual = (Get-FileHash `
-  .\jolter-v0.2.0-x86_64-pc-windows-msvc.zip `
+  .\jolter-v0.4.0-x86_64-pc-windows-msvc.zip `
   -Algorithm SHA256).Hash.ToLowerInvariant()
 $actual
-Get-Content .\jolter-v0.2.0-x86_64-pc-windows-msvc.zip.sha256
+Get-Content .\jolter-v0.4.0-x86_64-pc-windows-msvc.zip.sha256
 ```
 
 Compare the values, extract the archive, and place `jolter` or `jolter.exe` in

@@ -41,6 +41,17 @@ project or when the current project has no requirement for that command.
 Global activation does not edit system Node.js installations, registry state,
 or project files.
 
+## Installation Without Activation
+
+`jolter install` (or `jolter i`) downloads and installs a runtime or tool locally into `JOLTER_HOME` storage without setting it as the globally active version:
+
+```bash
+jolter install node@24.1.0
+jolter i pnpm@10.2.0
+```
+
+This is useful when pre-fetching toolchain dependencies for local testing or automation without altering your machine-wide active selection.
+
 ## Project Selection
 
 Project requirements override global activation:

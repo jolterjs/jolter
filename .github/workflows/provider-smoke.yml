@@ -11,6 +11,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   install-linux:
@@ -35,8 +36,8 @@ jobs:
         run: |
           set -e
 
-          exe="./target/release/jolter"
-          shim_exe="./target/release/jolter-shim"
+          exe="$PWD/target/release/jolter"
+          shim_exe="$PWD/target/release/jolter-shim"
           test -x "$shim_exe"
           export JOLTER_HOME="$RUNNER_TEMP/jolter-home"
 
@@ -147,8 +148,8 @@ jobs:
         run: |
           set -e
 
-          exe="./target/release/jolter"
-          shim_exe="./target/release/jolter-shim"
+          exe="$PWD/target/release/jolter"
+          shim_exe="$PWD/target/release/jolter-shim"
           test -x "$shim_exe"
           export JOLTER_HOME="$RUNNER_TEMP/jolter-home"
 

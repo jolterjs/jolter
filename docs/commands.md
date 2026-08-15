@@ -1,6 +1,6 @@
 # Command Reference
 
-This reference describes the public CLI in Jolter `0.2.0`. Run
+This reference describes the public CLI in Jolter `0.4.0`. Run
 `jolter <command> --help` to inspect the syntax shipped by the installed
 version.
 
@@ -53,6 +53,23 @@ supported shell inferred from `SHELL`.
 
 The command does not silently modify a shell profile or persistent Windows
 environment. See [shell setup](setup.md).
+
+## `jolter install` (alias: `i`)
+
+```bash
+jolter install <runtime-or-tool>@<selector>
+jolter i <runtime-or-tool>@<selector>
+```
+
+Examples:
+
+```bash
+jolter install node@24.1.0
+jolter i pnpm@10.2.0
+jolter install my-plugin-tool@1.0
+```
+
+Downloads and installs the specified runtime or tool locally into Jolter storage if it is not already present, without updating the globally active version like `jolter use` does.
 
 ## `jolter use`
 

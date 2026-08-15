@@ -112,8 +112,12 @@ if [ -n "${JOLTER_VERSION:-}" ]; then
   info "Installing specified Jolter version ${VERSION} for ${TARGET}..."
 elif [ "${CHANNEL}" = "nightly" ]; then
   info "Fetching latest Jolter nightly release version..."
-  RELEASE_JSON="$(download_text "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly" 2>/dev/null || printf '')"
-  VERSION="$(printf '%s' "${RELEASE_JSON}" | grep '"tag_name":' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' | head -n 1)"
+  RELEASES_JSON="$(download_text "https://api.github.com/repos/jolterjs/jolter/releases" 2>/dev/null || printf '')"
+  VERSION="$(printf '%s' "${RELEASES_JSON}" | grep '"tag_name":' | grep 'nightly' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' | head -n 1)"
+  if [ -z "${VERSION}" ]; then
+    RELEASE_JSON="$(download_text "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly" 2>/dev/null || printf '')"
+    VERSION="$(printf '%s' "${RELEASE_JSON}" | grep '"tag_name":' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' | head -n 1)"
+  fi
   if [ -z "${VERSION}" ]; then
     VERSION="nightly"
   fi
