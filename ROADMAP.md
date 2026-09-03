@@ -27,13 +27,208 @@ Rather than introducing many user-facing features, this release focuses on makin
 
 ---
 
-# v0.5.0 — Ecosystem
+I’d rewrite **v0.5.0** quite substantially. The old “Official Plugin Initiative” no longer fits the direction we discussed; v0.5.0 should instead establish the **instruction-registry architecture, declarative tool support, and configuration format expansion**.
 
-v0.5.0 focuses on growing the Jolter ecosystem.
+I’d also slightly rename the release from **Ecosystem** to **Registry & Configuration**, because that better describes the architectural purpose.
 
-## Core Feature
+# v0.5.0 — Registry & Configuration
 
-- Global configuration system
+v0.5.0 is a major architectural evolution of Jolter.
+
+The goal of this release is to remove the distinction between "built-in" and plugin-provided tools and establish a registry-driven architecture where tools and runtimes are defined through declarative instructions rather than hard-coded implementations or installed plugins.
+
+This release also expands Jolter's configuration system and lays the foundation for a much larger ecosystem.
+
+## Instruction Registry
+
+Jolter will introduce a centralized instruction registry describing how tools and runtimes can be resolved, downloaded, verified and installed.
+
+Instead of requiring a plugin to be installed before a tool can be used, Jolter will resolve the tool through its instruction.
+
+For example:
+
+```bash
+jolter install eslint
+jolter pin node@24
+jolter sync
+```
+
+will resolve the required instructions automatically.
+
+The registry will describe tools such as:
+
+* Node.js
+* Bun
+* Deno
+* npm
+* pnpm
+* Yarn
+* other developer tools
+
+The goal is for these tools to be treated identically by Jolter's resolver.
+
+There will no longer be a concept of "built-in supported tools" in the core architecture.
+
+## Removal of Hard-Coded Tool Implementations
+
+The existing hand-written implementations for:
+
+* Node.js
+* Bun
+* Deno
+* npm
+* pnpm
+* Yarn
+
+will be removed from Jolter's core tool handling.
+
+Their installation and resolution behavior will instead be represented through registry instructions.
+
+This creates a generic architecture where adding support for a new tool does not require modifying Jolter's core resolver.
+
+The architectural goal is:
+
+```text
+Tool
+  ↓
+Instruction Registry
+  ↓
+Resolver
+  ↓
+Installer
+```
+
+rather than:
+
+```text
+Tool
+  ↓
+Hard-coded implementation
+```
+
+## Plugin System Rewrite
+
+The existing plugin installation model will be replaced as the primary mechanism for adding tool support.
+
+Users will no longer need to install a plugin simply to make a tool available to Jolter.
+
+Instead:
+
+```text
+jolter install <tool>
+```
+
+will resolve the appropriate instruction automatically.
+
+Plugins may remain as an advanced extension mechanism for functionality that cannot be represented declaratively by the instruction system.
+
+The distinction becomes:
+
+* **Instructions** extend Jolter's knowledge of tools.
+* **Plugins** extend Jolter's capabilities.
+
+This significantly reduces the amount of plugin management required from users and simplifies the core architecture.
+
+---
+
+## Project Configuration
+
+Jolter's project configuration model will be revised to better represent its actual semantics.
+
+### Singular Runtime
+
+Since a Jolter configuration currently supports exactly one project runtime, the configuration will use `runtime` rather than `runtimes`.
+
+Example:
+
+```toml
+[runtime]
+node = "24"
+
+[tools]
+pnpm = "10"
+eslint = "9"
+```
+
+The runtime will continue to support different runtime implementations through the instruction registry.
+
+For example:
+
+```toml
+[runtime]
+node = "24"
+```
+
+and:
+
+```toml
+[runtime]
+bun = "1.2"
+```
+
+are both resolved through the same generic mechanism.
+
+The configuration itself does not need to know how the runtime is installed.
+
+---
+
+## Additional Configuration Formats
+
+Jolter will expand support beyond its existing project configuration format.
+
+Initial focus:
+
+* TOML
+* YAML
+* JSON
+
+Additional formats may be introduced as the configuration architecture matures.
+
+All supported formats will resolve into the same internal Jolter project configuration model.
+
+For example:
+
+```toml
+[runtime]
+node = "24"
+
+[tools]
+pnpm = "10"
+eslint = "9"
+```
+
+and an equivalent JSON configuration should produce the same project requirements.
+
+Configuration format and tool resolution will remain separate concerns.
+
+---
+
+## Generic Tool Model
+
+Jolter's internal representation of tools and runtimes will become generic.
+
+The core resolver will no longer contain special cases for individual tools.
+
+Instead, it will operate on requirements such as:
+
+```text
+runtime:
+  node → 24
+
+tools:
+  pnpm → 10
+  eslint → 9
+```
+
+and resolve those requirements using registry instructions.
+
+This provides the foundation for supporting a significantly larger number of developer tools without continuously expanding Jolter's core codebase.
+
+---
+
+## Global Configuration
+
+v0.5.0 will introduce global Jolter configuration.
 
 Examples:
 
@@ -43,27 +238,33 @@ jolter config get ...
 jolter config list
 ```
 
-Similar to:
+The system will provide a familiar configuration experience similar to:
 
-- git config
-- npm config
-- cargo config
+* Git
+* npm
+* Cargo
 
-## Official Plugin Initiative
+Global configuration will be designed to work alongside project-level configuration while keeping project requirements deterministic and explicit.
 
-We will begin publishing and maintaining official plugins under:
+---
 
-```
-github.com/jolterjs
-```
+## Registry Architecture
 
-Goals:
+The instruction registry will become the foundation of Jolter's ecosystem.
 
-- official plugins for popular developer tools
-- automated plugin updates
-- automatic releases for new upstream versions
-- optional transfer of plugins to original maintainers
-- first-class plugin quality
+The registry will be designed around:
+
+* versioned instructions
+* deterministic resolution
+* integrity verification
+* platform-aware artifacts
+* runtime and tool dependencies
+* extensible instruction types
+* local caching
+
+The registry should contain declarative instructions rather than arbitrary executable code.
+
+This allows Jolter to remain small while the ecosystem can grow independently of the Jolter binary.
 
 ---
 
