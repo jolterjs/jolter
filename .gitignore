@@ -5,3 +5,4 @@
 node_modules/
 *.swp
 *.tmp
+Rune.lock.bin
