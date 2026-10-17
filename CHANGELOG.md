@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.5 - 2026-10-17
+
+### What changed?
+
+- Upgraded `zip` to `9.0.4` to resolve critical vulnerabilities regarding symlink traversal and permission preservation during archive extraction (`RUSTSEC-2026-0367`, `RUSTSEC-2026-0368`, `RUSTSEC-2026-0369`).
+- Adapted archive extraction logic in `jolter-installer` for the `zip` 9 API changes.
+- Upgraded `wasmtime` to `36.0.18` to fix component-model handle table security advisory (`RUSTSEC-2026-0363`).
+- Upgraded `rustls` to `0.23.46` to resolve TLS session disclosure and downgrade advisories (`RUSTSEC-2026-0346`, `RUSTSEC-2026-0347`, `RUSTSEC-2026-0348`, `RUSTSEC-2026-0349`).
+- Refreshed and updated all workspace dependencies in `Cargo.lock`.
+- Resolved Rust 1.99+ `clippy::assert_is_empty` linter errors across all crate test suites (`jolter-resolver`, `jolter-shim`, `jolter-core`, `jolter-installer`, `jolter-cli`).
+- Fixed self-upgrade nightly release resolution test assertion in `jolter-installer`.
+- Revised `ROADMAP.md` for upcoming v0.5.0 ("Registry & Configuration"), outlining declarative instruction registries and multi-format configuration support.
+- Updated installation and release documentation to reflect v0.4.5.
+- Added machine-specific Rune lockfiles (`Rune.lock.bin`) to `.gitignore`.
+
 ## 0.4.0 - 2026-08-14
 
 ### What changed?
