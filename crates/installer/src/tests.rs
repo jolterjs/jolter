@@ -968,11 +968,11 @@ fn tests_release_channel_and_self_upgrade() {
     );
     text.insert(
         "https://api.github.com/repos/jolterjs/jolter/releases".to_owned(),
-        r#"[{"tag_name":"v0.4.0-nightly.1","draft":false,"prerelease":true}]"#.to_owned(),
+        r#"[{"tag_name":"v0.5.0-nightly.1","draft":false,"prerelease":true}]"#.to_owned(),
     );
     text.insert(
         "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly".to_owned(),
-        r#"{"tag_name":"v0.4.0-nightly.1"}"#.to_owned(),
+        r#"{"tag_name":"v0.5.0-nightly.1"}"#.to_owned(),
     );
 
     let archive_bytes = b"fake binary payload".to_vec();
@@ -998,9 +998,9 @@ fn tests_release_channel_and_self_upgrade() {
 
     text.insert(stable_checksum_url, sha256_hex.clone());
 
-    let nightly_archive_name = format!("jolter-v0.4.0-nightly.1-{target_triple}.{ext}");
+    let nightly_archive_name = format!("jolter-v0.5.0-nightly.1-{target_triple}.{ext}");
     let nightly_download_url = format!(
-        "https://github.com/jolterjs/jolter/releases/download/v0.4.0-nightly.1/{nightly_archive_name}"
+        "https://github.com/jolterjs/jolter/releases/download/v0.5.0-nightly.1/{nightly_archive_name}"
     );
     let nightly_checksum_url = format!("{nightly_download_url}.sha256");
 
