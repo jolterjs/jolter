@@ -38,8 +38,8 @@ Do not publish from a dirty or unreviewed worktree.
 Releases are triggered by semantic version tags:
 
 ```bash
-git tag -a v0.5.0 -m "Jolter v0.5.0"
-git push origin v0.5.0
+git tag -a v0.4.5 -m "Jolter v0.4.5"
+git push origin v0.4.5
 ```
 
 The pushed tag must match the workspace version. Pre-release tags should use a

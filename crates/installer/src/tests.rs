@@ -968,11 +968,11 @@ fn tests_release_channel_and_self_upgrade() {
     );
     text.insert(
         "https://api.github.com/repos/jolterjs/jolter/releases".to_owned(),
-        r#"[{"tag_name":"v0.5.0-nightly.1","draft":false,"prerelease":true}]"#.to_owned(),
+        r#"[{"tag_name":"v0.4.5-nightly.1","draft":false,"prerelease":true}]"#.to_owned(),
     );
     text.insert(
         "https://api.github.com/repos/jolterjs/jolter/releases/tags/nightly".to_owned(),
-        r#"{"tag_name":"v0.5.0-nightly.1"}"#.to_owned(),
+        r#"{"tag_name":"v0.4.5-nightly.1"}"#.to_owned(),
     );
 
     let archive_bytes = b"fake binary payload".to_vec();
@@ -998,9 +998,9 @@ fn tests_release_channel_and_self_upgrade() {
 
     text.insert(stable_checksum_url, sha256_hex.clone());
 
-    let nightly_archive_name = format!("jolter-v0.5.0-nightly.1-{target_triple}.{ext}");
+    let nightly_archive_name = format!("jolter-v0.4.5-nightly.1-{target_triple}.{ext}");
     let nightly_download_url = format!(
-        "https://github.com/jolterjs/jolter/releases/download/v0.5.0-nightly.1/{nightly_archive_name}"
+        "https://github.com/jolterjs/jolter/releases/download/v0.4.5-nightly.1/{nightly_archive_name}"
     );
     let nightly_checksum_url = format!("{nightly_download_url}.sha256");
 
@@ -1025,7 +1025,7 @@ fn tests_release_channel_and_self_upgrade() {
     let (ver_nightly, artifact_nightly) = installer
         .resolve_self_release(ReleaseChannel::Nightly)
         .unwrap();
-    assert_eq!(ver_nightly, Version::parse("0.5.0-nightly.1").unwrap());
+    assert_eq!(ver_nightly, Version::parse("0.4.5-nightly.1").unwrap());
     assert_eq!(artifact_nightly.url, nightly_download_url);
 }
 
@@ -1222,8 +1222,8 @@ fn tests_installer_resolve_runtimes_and_http_helpers() {
 
     for p in platforms {
         let target = node_target(p);
-        assert!(!target.index_name.is_empty());
-        assert!(!target.archive_name.is_empty());
+        assert_ne!(target.index_name, "");
+        assert_ne!(target.archive_name, "");
     }
 
     let pnpm_range_req: ToolRequest = "pnpm@10.x".parse().unwrap();
@@ -1669,7 +1669,7 @@ fn tests_installer_resolve_runtimes_and_http_helpers() {
         progress::ProgressAction::Configure,
         progress::ProgressAction::Shims,
     ] {
-        assert!(!action.label().is_empty());
+        assert_ne!(action.label(), "");
     }
 
     let bad_pt_release = types::PluginToolArchive {

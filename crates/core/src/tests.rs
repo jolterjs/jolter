@@ -412,10 +412,10 @@ fn tests_listing_doctor_and_pinning_methods() {
     storage.ensure_layout().unwrap();
     let jolter = Jolter::with_storage(storage.clone()).unwrap();
 
-    assert!(jolter.list().unwrap().is_empty());
-    assert!(jolter.list_tools().unwrap().is_empty());
-    assert!(jolter.list_plugin_tools().unwrap().is_empty());
-    assert!(jolter.list_plugins().unwrap().is_empty());
+    assert_eq!(jolter.list().unwrap(), []);
+    assert_eq!(jolter.list_tools().unwrap(), []);
+    assert_eq!(jolter.list_plugin_tools().unwrap(), []);
+    assert_eq!(jolter.list_plugins().unwrap(), []);
 
     let report = jolter.doctor(project.path()).unwrap();
     assert!(report.is_healthy());
@@ -479,7 +479,7 @@ fn tests_core_prune_cache_and_sync_methods() {
     assert_eq!(clean.removed_files, 1);
 
     let prune = jolter.prune(project.path(), 0, false).unwrap();
-    assert!(prune.removed.is_empty());
+    assert_eq!(prune.removed, []);
 
     let sync_res = jolter.sync(project.path());
     assert!(sync_res.is_ok());
@@ -692,10 +692,10 @@ fn tests_pin_plugin_and_list_extra() {
     );
 
     let plugins = jolter.list_plugins().unwrap();
-    assert!(plugins.is_empty());
+    assert_eq!(plugins, []);
 
     let tools = jolter.list_plugin_tools().unwrap();
-    assert!(tools.is_empty());
+    assert_eq!(tools, []);
 }
 
 #[test]
@@ -812,7 +812,7 @@ fn tests_core_prune_cache_and_sync_methods_extra() {
     assert_eq!(stats.files, 0);
 
     let shims = jolter.install_shims(&node1_exe).unwrap();
-    assert!(!shims.is_empty());
+    assert_ne!(shims, [] as [PathBuf; 0]);
 
     let cleaned = jolter.clean_cache().unwrap();
     assert_eq!(cleaned.reclaimed_bytes, 0);

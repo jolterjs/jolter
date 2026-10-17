@@ -238,7 +238,7 @@ mod tests {
         .unwrap();
 
         let resolution = resolve(temp.path()).unwrap();
-        assert!(resolution.tools.is_empty());
+        assert_eq!(resolution.tools, []);
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
 
         let resolution = resolve(temp.path()).unwrap();
         assert_eq!(resolution.runtime.unwrap().request.to_string(), "node@24.x");
-        assert!(resolution.tools.is_empty());
+        assert_eq!(resolution.tools, []);
     }
 
     #[test]

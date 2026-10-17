@@ -105,7 +105,7 @@ fn global_output_flags_control_operational_logging() {
         .output()
         .unwrap();
     assert!(quiet.status.success());
-    assert!(quiet.stderr.is_empty());
+    assert_eq!(quiet.stderr, b"");
     assert!(String::from_utf8_lossy(&quiet.stdout).contains("Pinned node@22"));
 }
 
@@ -402,7 +402,7 @@ fn doctor_can_emit_json() {
             .is_some_and(|checks| !checks.is_empty())
     );
     assert_eq!(value["checks"][0]["status"], "pass");
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, b"");
 }
 
 #[test]
@@ -793,7 +793,7 @@ fn completions_cover_all_supported_generators() {
             "{shell} stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(!output.stdout.is_empty());
+        assert_ne!(output.stdout, b"");
     }
 }
 

@@ -18,6 +18,6 @@ mod tests {
     fn tests_invoked_command_name_fallback() {
         let command =
             jolter_shim::invoked_command_name().unwrap_or_else(|| "jolter-shim".to_owned());
-        assert!(!command.is_empty());
+        assert_ne!(command, "");
     }
 }

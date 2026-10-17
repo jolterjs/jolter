@@ -238,7 +238,7 @@ fn tests_env_flag_returns_false_for_unset() {
 #[test]
 fn tests_timing_step_labels_and_indices() {
     for (i, step) in TIMING_STEPS.iter().enumerate() {
-        assert!(!step.label().is_empty());
+        assert_ne!(step.label(), "");
         assert_eq!(step.index(), i);
     }
 }
@@ -289,7 +289,7 @@ fn tests_table_row_construction() {
 fn tests_empty_table_rows() {
     let rows: &[TableRow] = &[];
     let lines = format_table_rows(rows);
-    assert!(lines.is_empty());
+    assert_eq!(lines, [] as [String; 0]);
 }
 
 #[test]

@@ -55,7 +55,7 @@ mod tests {
 
         let resolved = resolve_command("node", temp.path(), &storage).unwrap();
         assert_eq!(resolved.executable, exe);
-        assert!(resolved.arguments.is_empty());
+        assert_eq!(resolved.arguments, [] as [PathBuf; 0]);
     }
 
     #[test]
@@ -83,7 +83,7 @@ mod tests {
 
         let resolved = resolve_command("npm", temp.path(), &storage).unwrap();
         assert_eq!(resolved.executable, npm_exe);
-        assert!(resolved.arguments.is_empty());
+        assert_eq!(resolved.arguments, [] as [PathBuf; 0]);
     }
 
     #[test]
@@ -184,7 +184,7 @@ mod tests {
 
         let resolved = resolve_command("java", temp.path(), &storage).unwrap();
         assert_eq!(resolved.executable, tool_dir.join("java"));
-        assert!(resolved.arguments.is_empty());
+        assert_eq!(resolved.arguments, [] as [PathBuf; 0]);
     }
 
     #[test]
@@ -392,7 +392,7 @@ mod tests {
         assert!(obsolete_shim.is_file());
 
         let installed = install_shims(&fake_exe, &storage).unwrap();
-        assert!(!installed.is_empty());
+        assert_ne!(installed, [] as [PathBuf; 0]);
         assert!(!obsolete_shim.exists());
 
         let plugin_ver_dir = storage.plugins_dir().join("@scope/test/1.0.0");
