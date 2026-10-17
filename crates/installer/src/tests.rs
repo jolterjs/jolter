@@ -1025,7 +1025,7 @@ fn tests_release_channel_and_self_upgrade() {
     let (ver_nightly, artifact_nightly) = installer
         .resolve_self_release(ReleaseChannel::Nightly)
         .unwrap();
-    assert_eq!(ver_nightly, Version::parse("0.4.0-nightly.1").unwrap());
+    assert_eq!(ver_nightly, Version::parse("0.5.0-nightly.1").unwrap());
     assert_eq!(artifact_nightly.url, nightly_download_url);
 }
 

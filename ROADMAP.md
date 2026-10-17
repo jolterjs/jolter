@@ -57,13 +57,13 @@ will resolve the required instructions automatically.
 
 The registry will describe tools such as:
 
-* Node.js
-* Bun
-* Deno
-* npm
-* pnpm
-* Yarn
-* other developer tools
+- Node.js
+- Bun
+- Deno
+- npm
+- pnpm
+- Yarn
+- other developer tools
 
 The goal is for these tools to be treated identically by Jolter's resolver.
 
@@ -73,12 +73,12 @@ There will no longer be a concept of "built-in supported tools" in the core arch
 
 The existing hand-written implementations for:
 
-* Node.js
-* Bun
-* Deno
-* npm
-* pnpm
-* Yarn
+- Node.js
+- Bun
+- Deno
+- npm
+- pnpm
+- Yarn
 
 will be removed from Jolter's core tool handling.
 
@@ -124,8 +124,8 @@ Plugins may remain as an advanced extension mechanism for functionality that can
 
 The distinction becomes:
 
-* **Instructions** extend Jolter's knowledge of tools.
-* **Plugins** extend Jolter's capabilities.
+- **Instructions** extend Jolter's knowledge of tools.
+- **Plugins** extend Jolter's capabilities.
 
 This significantly reduces the amount of plugin management required from users and simplifies the core architecture.
 
@@ -178,9 +178,9 @@ Jolter will expand support beyond its existing project configuration format.
 
 Initial focus:
 
-* TOML
-* YAML
-* JSON
+- TOML
+- YAML
+- JSON
 
 Additional formats may be introduced as the configuration architecture matures.
 
@@ -240,9 +240,9 @@ jolter config list
 
 The system will provide a familiar configuration experience similar to:
 
-* Git
-* npm
-* Cargo
+- Git
+- npm
+- Cargo
 
 Global configuration will be designed to work alongside project-level configuration while keeping project requirements deterministic and explicit.
 
@@ -254,13 +254,13 @@ The instruction registry will become the foundation of Jolter's ecosystem.
 
 The registry will be designed around:
 
-* versioned instructions
-* deterministic resolution
-* integrity verification
-* platform-aware artifacts
-* runtime and tool dependencies
-* extensible instruction types
-* local caching
+- versioned instructions
+- deterministic resolution
+- integrity verification
+- platform-aware artifacts
+- runtime and tool dependencies
+- extensible instruction types
+- local caching
 
 The registry should contain declarative instructions rather than arbitrary executable code.
 

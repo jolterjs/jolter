@@ -68,10 +68,9 @@ fn extract_zip(
     let mut extracted = 0_u64;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index).map_err(InstallerError::Zip)?;
+        let entry_name = entry.name().map_err(InstallerError::Zip)?.to_string();
         if entry.is_symlink() {
-            return Err(InstallerError::UnsupportedArchiveEntry(
-                entry.name().to_owned(),
-            ));
+            return Err(InstallerError::UnsupportedArchiveEntry(entry_name));
         }
         extracted = extracted
             .checked_add(entry.size())
@@ -81,7 +80,7 @@ fn extract_zip(
         }
         let enclosed = entry
             .enclosed_name()
-            .ok_or_else(|| InstallerError::UnsafeArchivePath(entry.name().to_owned()))?;
+            .ok_or_else(|| InstallerError::UnsafeArchivePath(entry_name))?;
         let Some(relative) = strip_leading_components(&enclosed, strip_components)? else {
             continue;
         };
